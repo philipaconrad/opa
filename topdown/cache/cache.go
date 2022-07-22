@@ -7,6 +7,7 @@ package cache
 
 import (
 	"container/list"
+	"encoding/json"
 
 	"github.com/open-policy-agent/opa/ast"
 
@@ -171,12 +172,7 @@ func (c *cache) maxSizeBytes() int64 {
 // builtin function calls. This paves the way for later reconstruction and
 // replay of policies from their decision logs.
 // There are constraints however, namely that we only save the first
-// result we see for a given set of input parameters. This means that for
-// builtins like http.send, we assume that the outside world is able to
-// return arbitrary content, but that the result will be idempotent across
-// successive calls of that builtin with the same inputs. Otherwise, we
-// begin to descend into selective tracing of just the non-deterministic
-// builtins.
+// result we see for a given set of input parameters.
 type NDConfig interface {
 }
 
@@ -185,7 +181,7 @@ type NDBuiltinResultCache interface {
 	Get(builtinName string, k *ast.Term) (value *ast.Term, found bool)
 	Insert(builtinName string, k *ast.Term, value *ast.Term)
 	Delete(builtinName string, k *ast.Term)
-	//UpdateConfig(config *NDConfig)
+	MarshalJSON() ([]byte, error)
 }
 
 // Two-level map:
@@ -211,11 +207,11 @@ func NewNDBuiltinResultCache(config *NDConfig) NDBuiltinResultCache {
 func (c *ndBuiltinResultCache) Insert(builtinName string, k *ast.Term, v *ast.Term) {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
-	entries, exists := c.items[builtinName]
+	_, exists := c.items[builtinName]
 	if !exists {
 		c.items[builtinName] = make(map[string]*ast.Term)
 	}
-	entries[k.String()] = v // k will be an array term.
+	c.items[builtinName][k.String()] = v // k will be an array term.
 }
 
 // Get returns the value in the cache for k.
@@ -241,6 +237,12 @@ func (c *ndBuiltinResultCache) Delete(builtinName string, k *ast.Term) {
 	if _, exists := c.items[builtinName]; exists {
 		delete(c.items[builtinName], k.String())
 	}
+}
+
+func (c *ndBuiltinResultCache) MarshalJSON() ([]byte, error) {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	return json.Marshal(c.items)
 }
 
 // func (c *ndBuiltinResultCache) UpdateConfig(config *NDConfig) {
