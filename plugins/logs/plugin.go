@@ -52,6 +52,7 @@ type EventV1 struct {
 	Query        string                  `json:"query,omitempty"`
 	Input        *interface{}            `json:"input,omitempty"`
 	Result       *interface{}            `json:"result,omitempty"`
+	NDResult     *interface{}            `json:"nd_result_cache,omitempty"`
 	MappedResult *interface{}            `json:"mapped_result,omitempty"`
 	Erased       []string                `json:"erased,omitempty"`
 	Masked       []string                `json:"masked,omitempty"`
@@ -87,6 +88,7 @@ var queryKey = ast.StringTerm("query")
 var inputKey = ast.StringTerm("input")
 var resultKey = ast.StringTerm("result")
 var mappedResultKey = ast.StringTerm("mapped_result")
+var ndResultCacheKey = ast.StringTerm("nd_result_cache")
 var erasedKey = ast.StringTerm("erased")
 var maskedKey = ast.StringTerm("masked")
 var errorKey = ast.StringTerm("error")
@@ -157,6 +159,14 @@ func (e *EventV1) AST() (ast.Value, error) {
 			return nil, err
 		}
 		event.Insert(mappedResultKey, ast.NewTerm(mResults))
+	}
+
+	if e.NDResult != nil {
+		ndResults, err := roundtripJSONToAST(e.NDResult)
+		if err != nil {
+			return nil, err
+		}
+		event.Insert(ndResultCacheKey, ast.NewTerm(ndResults))
 	}
 
 	if len(e.Erased) > 0 {
@@ -566,6 +576,7 @@ func (p *Plugin) Log(ctx context.Context, decision *server.Info) error {
 		Input:        decision.Input,
 		Result:       decision.Results,
 		MappedResult: decision.MappedResults,
+		NDResult:     decision.NDResults,
 		RequestedBy:  decision.RemoteAddr,
 		Timestamp:    decision.Timestamp,
 		inputAST:     decision.InputAST,
