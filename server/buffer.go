@@ -27,6 +27,7 @@ type Info struct {
 	InputAST      ast.Value
 	Results       *interface{}
 	MappedResults *interface{}
+	NDResults     *interface{}
 	Error         error
 	Metrics       metrics.Metrics
 	Trace         []*topdown.Event

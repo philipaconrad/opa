@@ -42,7 +42,7 @@ type (
 		Cancel                 Cancel                     // atomic value that signals evaluation to halt
 		Runtime                *ast.Term                  // runtime information on the OPA instance
 		Cache                  builtins.Cache             // built-in function state cache
-		NDCache                cache.NDBuiltinResultCache // non-deterministic builtin results cache
+		NDBuiltinResultCache   cache.NDBuiltinResultCache // non-deterministic builtin results cache
 		InterQueryBuiltinCache cache.InterQueryCache      // cross-query built-in function state cache
 		Location               *ast.Location              // location of built-in call
 		Tracers                []Tracer                   // Deprecated: Use QueryTracers instead

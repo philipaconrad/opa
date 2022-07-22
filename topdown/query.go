@@ -52,6 +52,7 @@ type Query struct {
 	indexing               bool
 	earlyExit              bool
 	interQueryBuiltinCache cache.InterQueryCache
+	ndBuiltinResultCache   cache.NDBuiltinResultCache
 	strictBuiltinErrors    bool
 	printHook              print.Hook
 	tracingOpts            tracing.Options
@@ -242,6 +243,12 @@ func (q *Query) WithInterQueryBuiltinCache(c cache.InterQueryCache) *Query {
 	return q
 }
 
+// WithNDBuiltinResultCache sets the intra-query cache that non-deterministic built-in functions can utilize.
+func (q *Query) WithNDBuiltinResultCache(c cache.NDBuiltinResultCache) *Query {
+	q.ndBuiltinResultCache = c
+	return q
+}
+
 // WithStrictBuiltinErrors tells the evaluator to treat all built-in function errors as fatal errors.
 func (q *Query) WithStrictBuiltinErrors(yes bool) *Query {
 	q.strictBuiltinErrors = yes
@@ -313,6 +320,7 @@ func (q *Query) PartialRun(ctx context.Context) (partials []ast.Body, support []
 		builtinCache:           builtins.Cache{},
 		functionMocks:          newFunctionMocksStack(),
 		interQueryBuiltinCache: q.interQueryBuiltinCache,
+		ndBuiltinResultCache:   q.ndBuiltinResultCache,
 		virtualCache:           newVirtualCache(),
 		comprehensionCache:     newComprehensionCache(),
 		saveSet:                newSaveSet(q.unknowns, b, q.instr),
@@ -460,6 +468,7 @@ func (q *Query) Iter(ctx context.Context, iter func(QueryResult) error) error {
 		instr:                  q.instr,
 		builtins:               q.builtins,
 		builtinCache:           builtins.Cache{},
+		ndBuiltinResultCache:   q.ndBuiltinResultCache,
 		functionMocks:          newFunctionMocksStack(),
 		interQueryBuiltinCache: q.interQueryBuiltinCache,
 		virtualCache:           newVirtualCache(),

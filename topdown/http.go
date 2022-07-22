@@ -126,12 +126,12 @@ func builtinHTTPSend(bctx BuiltinContext, args []*ast.Term, iter func(*ast.Term)
 	}
 
 	// Cache for decision logging, if cache enabled/exists.
-	if bctx.NDCache != nil {
+	if bctx.NDBuiltinResultCache != nil {
 		argsList := ast.ArrayTerm(args...)
 		// Do we already have an entry for this arguments list?
 		// If not, cache it!
-		if _, exists := bctx.NDCache.Get(ast.HTTPSend.Name, argsList); !exists {
-			bctx.NDCache.Insert(ast.HTTPSend.Name, argsList, result)
+		if _, exists := bctx.NDBuiltinResultCache.Get(ast.HTTPSend.Name, argsList); !exists {
+			bctx.NDBuiltinResultCache.Insert(ast.HTTPSend.Name, argsList, result)
 		}
 	}
 	return iter(result)
