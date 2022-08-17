@@ -3,6 +3,7 @@ module github.com/open-policy-agent/opa
 go 1.17
 
 require (
+	git.sr.ht/~charles/graph v0.0.1
 	github.com/OneOfOne/xxhash v1.2.8
 	github.com/agnivade/levenshtein v1.1.1
 	github.com/andreyvit/diff v0.0.0-20170406064948-c7f18ee00883
