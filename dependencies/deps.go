@@ -7,10 +7,501 @@ package dependencies
 import (
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 
+	"git.sr.ht/~charles/graph"
 	"github.com/open-policy-agent/opa/ast"
+	"github.com/open-policy-agent/opa/internal/ir"
 	"github.com/open-policy-agent/opa/util"
 )
+
+// Computational complexity:
+// - CFG Construction: O(N) (at a minimum)
+// - CFG Path walking: O(2^B), where B is the number of branches.
+
+// To do dependency analysis properly, we need to walk *every* path through the program.
+// For this, we construct the control-flow graph (CFG) of the program, and then traverse *every* path through that directed acyclic graph (DAG).
+// This requires us to first put together a good graph. Thankfully, ~charles/graph is an available graph module for this purpose.
+// CFG construction / walking:
+// - Each function, plan, and block in the program is first given a unique name (referred to as its "address").
+// - We then create unique graph nodes for the beginning and end of each function, plan, and block, and track the map of names -> nodes for later. ("landmarks" map)
+//   - Landmark names look like:
+//     - plans:               "plans.policy/allow$begin", "plans.policy/allow$end"
+//     - blocks in functions: "funcs.g0.data.policy.allow.b0$begin", "funcs.g0.data.policy.allow.b0$end"
+//     - sub-blocks:          "funcs.g0.data.policy.allow.0:2.1$begin" (block 0, statement 2, block 1, begin)
+//     - This makes it trivial to string together the default control paths between blocks, and to know what to target.
+// --> The above 2x steps look like:  getLandmarks(policy) (map[string]int, Graph)
+// - We then walk through the policy linearly from the top down, and begin adding nodes to the graph for statements, and edges to mark control flow. (customized for Torin's dependencies use case?)
+// --> The above step looks like:     addStmtsToGraph(policy, landmarks, graph) (Graph)
+// - Once the CFG is finished, we iteratively evaluate the stmt chain along every path, doing simple bookkeeping on the locals we see.
+//   - Sets of refs seen along each path can be bulk-union'd at the end and returned.
+
+// Extracts the landmarks map and an initial graph from the policy.
+// Does at least block-level graph construction, might go statement level if needed.
+func getLandmarks(p *ir.Policy) (map[string]graph.Node, *graph.Graph) {
+	landmarks := map[string]graph.Node{}
+	out := graph.NewGraph()
+
+	rootNode := out.NewNodeWithData("start")
+	landmarks["start"] = rootNode
+
+	// Add plans to landmarks.
+	for i := range p.Plans.Plans {
+		plan := p.Plans.Plans[i]
+		planName := "plans." + plan.Name
+		beginNode := out.NewNodeWithData(planName + "$begin")
+		endNode := out.NewNodeWithData(planName + "$end")
+		landmarks[planName+"$begin"] = beginNode
+		landmarks[planName+"$end"] = endNode
+		out.NewEdgeWithData(rootNode, beginNode, nil)
+	}
+
+	// Add functions to landmarks.
+	for i := range p.Funcs.Funcs {
+		plan := p.Funcs.Funcs[i]
+		funcName := "funcs." + plan.Name
+		beginNode := out.NewNodeWithData(funcName + "$begin")
+		endNode := out.NewNodeWithData(funcName + "$end")
+		landmarks[funcName+"$begin"] = beginNode
+		landmarks[funcName+"$end"] = endNode
+	}
+
+	// Add plan blocks recursively to landmarks.
+	for i := range p.Plans.Plans {
+		plan := p.Plans.Plans[i]
+		// Ensure first block is stitched up to the start-of-plan.
+		prevNode := landmarks["plans."+plan.Name+"$begin"]
+		for j := range plan.Blocks {
+			block := plan.Blocks[j]
+			blockName := "plans." + plan.Name + "." + strconv.Itoa(j)
+			beginNode := out.NewNodeWithData(blockName + "$begin")
+			endNode := out.NewNodeWithData(blockName + "$end")
+			// Stitch each end-of-block to next start-of-block.
+			out.NewEdgeWithData(prevNode, beginNode, nil)
+			prevNode = endNode
+			addStmtsNodesEdges(block, blockName, landmarks, out)
+		}
+		// Stitch the last end-of-block -> end-of-plan.
+		out.NewEdgeWithData(prevNode, landmarks["plans."+plan.Name+"$end"], nil)
+	}
+
+	return landmarks, out
+}
+
+// In-place modifies the graph.
+// General flow for each statement type is:
+//  - Create node for that stmt.
+//  - Link end from current stmt to the stmt before it.
+//  - Optional:
+//    - Generate any additional out edges (break, call, etc.)
+//    - Recurse into sub-blocks.
+func addStmtsNodesEdges(block *ir.Block, parentAddr string, landmarks map[string]graph.Node, g *graph.Graph) {
+	var prevNodeName = parentAddr + "$begin"
+	for i := range block.Stmts {
+		stmt := block.Stmts[i]
+		// Create node.
+		node := g.NewNodeWithData(stmt)
+		nodeName := parentAddr + ":" + strconv.Itoa(i)
+		landmarks[nodeName] = node
+		// Link to prior stmt node. (special case for first stmt in block.)
+		g.NewEdgeWithData(landmarks[prevNodeName], node, nil)
+		prevNodeName = nodeName
+		// Do special optional work, depending on stmt type:
+		switch x := stmt.(type) {
+		case *ir.ReturnLocalStmt:
+			// Skip end-of-block stitching, we're bailing.
+			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil)
+			return
+		case *ir.CallStmt:
+			// Link out to the correct function.
+			if strings.HasPrefix(x.Func, "internal.") {
+				// no-op for now!
+				// TODO(philipc): Let's fix this when we know how to handle builtin calls.
+			} else {
+				funcName := "funcs." + x.Func
+				// Out edge to the function.
+				g.NewEdgeWithData(node, landmarks[funcName+"$begin"], nil)
+				// Return edge should be from end-of-func.
+				prevNodeName = "funcs." + x.Func + "$end"
+				continue
+			}
+		case *ir.CallDynamicStmt:
+			// no-op for now!
+			// TODO(philipc): Let's fix this when we know how to handle this type of dynamic call.
+		case *ir.BlockStmt:
+			for j := range x.Blocks {
+				addStmtsNodesEdges(x.Blocks[j], nodeName, landmarks, g)
+			}
+		case *ir.BreakStmt:
+			levels := x.Index
+			path := strings.Split(parentAddr, ".")
+			// Don't duplicate end-of-block stitching.
+			if levels == 0 {
+				g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil)
+				return
+			} else {
+				// TODO(philipc): Add some validation either here or elsewhere to ensure we don't jump too high.
+				breakPath := path[:len(path)-int(levels)]
+				breakDestName := strings.Join(breakPath, ".")
+				//isnumeric check? determines whether to tag $begin/$end, or else iter by one, and paste in the $begin/$end
+				g.NewEdgeWithData(node, landmarks[breakDestName+"$end"], nil) // TODO: Verify this is right.
+				return
+			}
+		case *ir.DotStmt:
+			// Defined/Undefined branches.
+			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+		case *ir.LenStmt:
+		case *ir.ScanStmt:
+			addStmtsNodesEdges(x.Block, nodeName, landmarks, g)
+			// Defined/Undefined branches.
+			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+		case *ir.NotStmt:
+			addStmtsNodesEdges(x.Block, nodeName, landmarks, g)
+			// Defined/Undefined branches.
+			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+		case *ir.AssignIntStmt:
+		case *ir.AssignVarStmt:
+		case *ir.AssignVarOnceStmt:
+		case *ir.ResetLocalStmt:
+		case *ir.MakeNullStmt:
+		case *ir.MakeNumberIntStmt:
+		case *ir.MakeNumberRefStmt:
+		case *ir.MakeArrayStmt:
+		case *ir.MakeObjectStmt:
+		case *ir.MakeSetStmt:
+		case *ir.EqualStmt:
+			// Defined/Undefined branches.
+			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+		case *ir.NotEqualStmt:
+			// Defined/Undefined branches.
+			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+		case *ir.IsArrayStmt:
+			// Defined/Undefined branches.
+			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+		case *ir.IsObjectStmt:
+			// Defined/Undefined branches.
+			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+		case *ir.IsDefinedStmt:
+			// Defined/Undefined branches.
+			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+		case *ir.IsUndefinedStmt:
+			// Defined/Undefined branches.
+			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+		case *ir.ArrayAppendStmt:
+		case *ir.ObjectInsertStmt:
+		case *ir.ObjectInsertOnceStmt:
+		case *ir.ObjectMergeStmt:
+		case *ir.SetAddStmt:
+		case *ir.WithStmt:
+			addStmtsNodesEdges(x.Block, nodeName, landmarks, g)
+		case *ir.NopStmt:
+		case *ir.ResultSetAddStmt:
+		}
+	}
+	// Stitch up last statement to end-of-block.
+	g.NewEdgeWithData(landmarks[prevNodeName], landmarks[parentAddr+"$end"], nil)
+}
+
+// type executionResult enum {
+// 	branchForDefUndef <implicit: null ret> <implicit: next stmt>
+//  breakNLevels N
+//  return
+//  return with value V
+//  next <implict: next stmt>
+//  blocks
+//  block
+//  call
+//  calldyn?
+// }
+
+// OR! consider:
+// {
+// X- type enum
+// - breakLevels int
+// X- callTarget
+// X- callDynTarget (maybe ignore at first?)
+// }
+// Then, if the ptr is nil, we can ignore, and do the sane thing.
+// Otherwise, we've got a non-local control thing happening!
+// Maybe just return a pointer to an int? If it's nil, we know we've got no breaks happening.
+// - If it's 0, then we know we just hit the level we should be on.
+// - If it's 1+, then we know we should just return upwards (we're in a recursive chain of some kind).
+// - This means we can safely let blocks see their neighbors! Non-local breaks imply that somebody higher up will figure stuff out.
+
+// // I'm wondering if we should include the possibility for custom "function" and "block" handler functions to be provided.
+// // Those would allow custom handling of nested blocks/functions, but maybe it's a dumb idea.
+
+// func copyLocalRefs(x map[int]string) map[int]string {
+// 	out := make(map[int]string, len(x))
+// 	for k, v := range x {
+// 		out[k] = v
+// 	}
+// 	return out
+// }
+
+// func copyLocalDeps(x map[int]ast.Set) map[int]ast.Set {
+// 	out := make(map[int]ast.Set, len(x))
+// 	for k, v := range x {
+// 		out[k] = v.Copy()
+// 	}
+// 	return out
+// }
+
+// type blockList struct {
+// 	blocks []*ir.Block
+// 	index  int
+// }
+
+// type blockStack struct {
+// 	v []*blockList
+// }
+
+// func (bs *blockStack) push(bl *blockList) {
+// 	bs.v = append(bs.v, bl)
+// }
+
+// func (bs *blockStack) pop() *blockList {
+// 	if len(bs.v) > 0 {
+// 		endIndex := len(bs.v) - 1
+// 		out, stack := bs.v[endIndex], bs.v[:endIndex]
+// 		bs.v = stack
+// 		return out
+// 	}
+// 	return nil
+// }
+
+// // analyzeBlock iterates through each statement in the block, recursing on branches and calls as needed.
+// // The final bundle of dependency sets is union'd together, and returned upwards, along with locals and control-flow info.
+// // We handle breaks by using the block address + blockList to allow us to figure out the place to pick up execution.
+// // - Block list is the original block list of the function/plan
+// // - Address is an []{int, int} that we can use to dive down to the correct level by indexing the correct block, then statement within the block?
+// // - Or is address as []int sufficiently unambiguous? I'd hope so.
+// // - Perhaps a better approach is appending a pointer to the parent blocklist each time we dive down a level?
+
+// // Evaluate all paths through the program, rooted at this blocklist, with this incoming state.
+// func analyzeBlockList?
+
+// // Trace the path of
+// func traceDepsFromStmt() () {
+
+// }
+
+// // Evaluate all paths through the program, rooted at this block, with this incoming state.
+// func analyzeBlock(
+// 	policy *ir.Policy,
+// 	block *ir.Block,
+// 	blocks *blockStack,
+// 	localRefs map[int]string,
+// 	localDeps map[int]ast.Set) (*blockStack, map[int]string, map[int]ast.Set, ast.Set) {
+// 	globalDeps := ast.NewSet()
+// 	var seenDeps ast.Set
+// 	var localR = localRefs
+// 	var localD = localDeps
+// 	var bs = blocks
+
+// 	for _, stmt := range block.Stmts {
+// 		bs, localR, localD, seenDeps = analyzeStmt(policy, &stmt, copyLocalRefs(localR), copyLocalDeps(localD))
+// 		globalDeps = globalDeps.Union(seenDeps)
+// 	}
+
+// 	return bs, localR, localD, seenDeps
+// }
+
+// // Evaluate all paths through the program, rooted at this statement, with this incoming state.
+// func analyzeStmt(
+// 	policy *ir.Policy,
+// 	stmt *ir.Stmt,
+// 	localRefs map[int]string,
+// 	localDeps map[int]ast.Set) (*blockStack, map[int]string, map[int]ast.Set, ast.Set) {
+// 	iStmt := *stmt
+
+// 	switch iStmt.(type) {
+// 	case *ir.ReturnLocalStmt:
+// 	case *ir.CallStmt:
+// 	case *ir.CallDynamicStmt:
+// 	case *ir.BlockStmt:
+// 	case *ir.BreakStmt:
+// 	case *ir.DotStmt:
+// 	case *ir.LenStmt:
+// 	case *ir.ScanStmt:
+// 	case *ir.NotStmt:
+// 	case *ir.AssignIntStmt:
+// 	case *ir.AssignVarStmt:
+// 	case *ir.AssignVarOnceStmt:
+// 	case *ir.ResetLocalStmt:
+// 	case *ir.MakeNullStmt:
+// 	case *ir.MakeNumberIntStmt:
+// 	case *ir.MakeNumberRefStmt:
+// 	case *ir.MakeArrayStmt:
+// 	case *ir.MakeObjectStmt:
+// 	case *ir.MakeSetStmt:
+// 	case *ir.EqualStmt:
+// 	case *ir.NotEqualStmt:
+// 	case *ir.IsArrayStmt:
+// 	case *ir.IsObjectStmt:
+// 	case *ir.IsDefinedStmt:
+// 	case *ir.IsUndefinedStmt:
+// 	case *ir.ArrayAppendStmt:
+// 	case *ir.ObjectInsertStmt:
+// 	case *ir.ObjectInsertOnceStmt:
+// 	case *ir.ObjectMergeStmt:
+// 	case *ir.SetAddStmt:
+// 	case *ir.WithStmt:
+// 	case *ir.NopStmt:
+// 	case *ir.ResultSetAddStmt:
+// 	}
+// }
+
+// // We need to build a CFG to be able to evaluate the transfer functions along each possible execution path
+// // for dependency analysis. It sucks, but this is one of the easiest ways to get that information.
+// // Once the CFG is constructed, every statement should be in one or more graph paths.
+// // We can then begin a recursive graph traversal, hitting all paths to the end.
+// // Along the way, we can implicitly evaluate the transfer functions of each statement.
+
+// type policyDepCtx struct {
+// 	policy       *ir.Policy
+// 	callstack    []int           // Block indices. Each nesting level deeper appends a new int.
+// 	dependencies ast.Set         // Tracks all unique dependencies seen in the policy.
+// 	localRefs    map[int]string  // Tracks dotted ref names, per local register.
+// 	localDeps    map[int]ast.Set // Tracks all refs affecting a local register.
+// }
+
+// func (p *policyDepCtx) Copy() *policyDepCtx {
+// 	out := &policyDepCtx{}
+// 	out.policy = p.policy
+// 	out.callstack = make([]int, len(p.callstack))
+// 	copy(out.callstack, p.callstack)
+// 	out.dependencies = p.dependencies.Copy()
+// 	out.localDeps = make(map[int]ast.Set, len(p.localDeps))
+// 	for k, v := range p.localDeps {
+// 		out.localDeps[k] = v
+// 	}
+// 	out.localRefs = make(map[int]string, len(p.localRefs))
+// 	for k, v := range p.localRefs {
+// 		out.localRefs[k] = v
+// 	}
+// 	return out
+// }
+
+// func (p *policyDepCtx) pushCallStack(v int) {
+// 	p.callstack = append(p.callstack, v)
+// }
+
+// // Can panic, unfortunately.
+// func (p *policyDepCtx) popCallStack() int {
+// 	out := p.callstack[len(p.callstack)-1]
+// 	p.callstack = p.callstack[0 : len(p.callstack)-1]
+// 	return out
+// }
+
+// func FindExternalDeps(sourceModules, entrypointQueries []string) (ast.Set, error) {
+// 	queries := make([]ast.Body, len(entrypointQueries))
+// 	for i := range queries {
+// 		queries[i] = ast.MustParseBody(entrypointQueries[i])
+// 	}
+// 	modules := make([]*ast.Module, len(sourceModules))
+// 	for i := range modules {
+// 		file := fmt.Sprintf("module-%d.rego", i)
+// 		m, err := ast.ParseModule(file, sourceModules[i])
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 		modules[i] = m
+// 	}
+// 	planner := planner.New().WithQueries([]planner.QuerySet{
+// 		{
+// 			Name:    "test",
+// 			Queries: queries,
+// 		},
+// 	}).WithModules(modules).WithBuiltinDecls(ast.BuiltinMap)
+// 	policy, err := planner.Plan()
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	return ast.NewSet(), nil
+// }
+
+// func trackDepsInPlan(p ir.Plan, gDC *policyDepCtx) (*policyDepCtx, error) {
+// 	var err error
+// 	outGDC := gDC.Copy()
+// 	outGDC, err = trackDepsInBlocks(p.Blocks, outGDC)
+// 	return outGDC, err
+// }
+
+// func trackDepsInFunction(f ir.Func, gDC *policyDepCtx) (*policyDepCtx, error) {
+// 	var err error
+// 	outGDC := gDC.Copy()
+// 	outGDC, err = trackDepsInBlocks(f.Blocks, outGDC)
+// 	return outGDC, err
+// }
+
+// func trackDepsInBlocks(blocks []*ir.Block, gDC *policyDepCtx) (*policyDepCtx, error) {
+// 	var err error
+// 	outGDC := gDC.Copy()
+// 	for i, block := range blocks {
+// 		outGDC.pushCallStack(i)
+// 		outGDC, err = trackDepsInBlock(block, blocks, outGDC)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 		outGDC.popCallStack()
+// 	}
+// 	return outGDC, nil
+// }
+
+// func trackDepsInBlock(block *ir.Block, parentBlocks []*ir.Block, gDC *policyDepCtx) (*policyDepCtx, error) {
+// 	var err error
+// 	outGDC := gDC.Copy()
+// 	for _, stmt := range block.Stmts {
+// 		outGDC, err = trackDepsInStmt(stmt, gDC)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+
+// 	}
+// 	return outGDC, nil
+// }
+
+// func trackDepsInStmt(stmt ir.Stmt, gDC *policyDepCtx) (*policyDepCtx, error) {
+// 	iStmt := stmt
+// 	switch iStmt.(type) {
+// 	case *ir.ReturnLocalStmt:
+// 	case *ir.CallStmt:
+// 	case *ir.CallDynamicStmt:
+// 	case *ir.BlockStmt:
+// 	case *ir.BreakStmt:
+// 	case *ir.DotStmt:
+// 	case *ir.LenStmt:
+// 	case *ir.ScanStmt:
+// 	case *ir.NotStmt:
+// 	case *ir.AssignIntStmt:
+// 	case *ir.AssignVarStmt:
+// 	case *ir.AssignVarOnceStmt:
+// 	case *ir.ResetLocalStmt:
+// 	case *ir.MakeNullStmt:
+// 	case *ir.MakeNumberIntStmt:
+// 	case *ir.MakeNumberRefStmt:
+// 	case *ir.MakeArrayStmt:
+// 	case *ir.MakeObjectStmt:
+// 	case *ir.MakeSetStmt:
+// 	case *ir.EqualStmt:
+// 	case *ir.NotEqualStmt:
+// 	case *ir.IsArrayStmt:
+// 	case *ir.IsObjectStmt:
+// 	case *ir.IsDefinedStmt:
+// 	case *ir.IsUndefinedStmt:
+// 	case *ir.ArrayAppendStmt:
+// 	case *ir.ObjectInsertStmt:
+// 	case *ir.ObjectInsertOnceStmt:
+// 	case *ir.ObjectMergeStmt:
+// 	case *ir.SetAddStmt:
+// 	case *ir.WithStmt:
+// 	case *ir.NopStmt:
+// 	case *ir.ResultSetAddStmt:
+// 	}
+
+// }
 
 // All returns the list of data ast.Refs that the given AST element depends on.
 func All(x interface{}) (resolved []ast.Ref, err error) {
