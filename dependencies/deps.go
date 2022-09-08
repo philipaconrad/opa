@@ -13,6 +13,7 @@ import (
 	"git.sr.ht/~charles/graph"
 	"github.com/open-policy-agent/opa/ast"
 	"github.com/open-policy-agent/opa/internal/ir"
+	"github.com/open-policy-agent/opa/internal/planner"
 	"github.com/open-policy-agent/opa/util"
 )
 
@@ -37,23 +38,40 @@ import (
 // - Once the CFG is finished, we iteratively evaluate the stmt chain along every path, doing simple bookkeeping on the locals we see.
 //   - Sets of refs seen along each path can be bulk-union'd at the end and returned.
 
+// Fetches the node if it's already in the landmarks map.
+// Otherwise, creates the node, and returns it after inserting it in the graph.
+// TODO: Rename this to autovivifyNodeByName, maybe?
+func getOrCreateNodeByName(name string, landmarks map[string]graph.Node, g *graph.Graph) graph.Node {
+	if v, ok := landmarks[name]; ok {
+		return v
+	}
+	// Create+insert node, then return it.
+	node := g.NewNodeWithData(name)
+	landmarks[name] = node
+	return node
+}
+
+func getOrCreateNodesForEdgeWithData(src, dest string, data interface{}, landmarks map[string]graph.Node, g *graph.Graph) graph.Edge {
+	sNode := getOrCreateNodeByName(src, landmarks, g)
+	dNode := getOrCreateNodeByName(dest, landmarks, g)
+	return g.MustNewEdgeWithData(sNode, dNode, g)
+}
+
 // Extracts the landmarks map and an initial graph from the policy.
 // Does at least block-level graph construction, might go statement level if needed.
 func getLandmarks(p *ir.Policy) (map[string]graph.Node, *graph.Graph) {
 	landmarks := map[string]graph.Node{}
 	out := graph.NewGraph()
 
-	rootNode := out.NewNodeWithData("start")
+	rootNode := getOrCreateNodeByName("start", landmarks, out)
 	landmarks["start"] = rootNode
 
 	// Add plans to landmarks.
 	for i := range p.Plans.Plans {
 		plan := p.Plans.Plans[i]
 		planName := "plans." + plan.Name
-		beginNode := out.NewNodeWithData(planName + "$begin")
-		endNode := out.NewNodeWithData(planName + "$end")
-		landmarks[planName+"$begin"] = beginNode
-		landmarks[planName+"$end"] = endNode
+		beginNode := getOrCreateNodeByName(planName+"$begin", landmarks, out)
+		getOrCreateNodeByName(planName+"$end", landmarks, out)
 		out.NewEdgeWithData(rootNode, beginNode, nil)
 	}
 
@@ -61,10 +79,8 @@ func getLandmarks(p *ir.Policy) (map[string]graph.Node, *graph.Graph) {
 	for i := range p.Funcs.Funcs {
 		plan := p.Funcs.Funcs[i]
 		funcName := "funcs." + plan.Name
-		beginNode := out.NewNodeWithData(funcName + "$begin")
-		endNode := out.NewNodeWithData(funcName + "$end")
-		landmarks[funcName+"$begin"] = beginNode
-		landmarks[funcName+"$end"] = endNode
+		getOrCreateNodeByName(funcName+"$begin", landmarks, out)
+		getOrCreateNodeByName(funcName+"$end", landmarks, out)
 	}
 
 	// Add plan blocks recursively to landmarks.
@@ -74,9 +90,9 @@ func getLandmarks(p *ir.Policy) (map[string]graph.Node, *graph.Graph) {
 		prevNode := landmarks["plans."+plan.Name+"$begin"]
 		for j := range plan.Blocks {
 			block := plan.Blocks[j]
-			blockName := "plans." + plan.Name + "." + strconv.Itoa(j)
-			beginNode := out.NewNodeWithData(blockName + "$begin")
-			endNode := out.NewNodeWithData(blockName + "$end")
+			blockName := "plans." + plan.Name + "|" + strconv.Itoa(j)
+			beginNode := getOrCreateNodeByName(blockName+"$begin", landmarks, out)
+			endNode := getOrCreateNodeByName(blockName+"$end", landmarks, out)
 			// Stitch each end-of-block to next start-of-block.
 			out.NewEdgeWithData(prevNode, beginNode, nil)
 			prevNode = endNode
@@ -84,6 +100,25 @@ func getLandmarks(p *ir.Policy) (map[string]graph.Node, *graph.Graph) {
 		}
 		// Stitch the last end-of-block -> end-of-plan.
 		out.NewEdgeWithData(prevNode, landmarks["plans."+plan.Name+"$end"], nil)
+	}
+
+	// Add plan blocks recursively to landmarks.
+	for i := range p.Funcs.Funcs {
+		fn := p.Funcs.Funcs[i]
+		// Ensure first block is stitched up to the start-of-plan.
+		prevNode := landmarks["funcs."+fn.Name+"$begin"]
+		for j := range fn.Blocks {
+			block := fn.Blocks[j]
+			blockName := "funcs." + fn.Name + "|" + strconv.Itoa(j)
+			beginNode := getOrCreateNodeByName(blockName+"$begin", landmarks, out)
+			endNode := getOrCreateNodeByName(blockName+"$end", landmarks, out)
+			// Stitch each end-of-block to next start-of-block.
+			out.NewEdgeWithData(prevNode, beginNode, nil)
+			prevNode = endNode
+			addStmtsNodesEdges(block, blockName, landmarks, out)
+		}
+		// Stitch the last end-of-block -> end-of-plan.
+		out.NewEdgeWithData(prevNode, landmarks["funcs."+fn.Name+"$end"], nil)
 	}
 
 	return landmarks, out
@@ -96,22 +131,32 @@ func getLandmarks(p *ir.Policy) (map[string]graph.Node, *graph.Graph) {
 //  - Optional:
 //    - Generate any additional out edges (break, call, etc.)
 //    - Recurse into sub-blocks.
+type stmtNode struct {
+	name string
+	stmt ir.Stmt
+}
+
+type cfgEdge struct {
+	kind string
+}
+
 func addStmtsNodesEdges(block *ir.Block, parentAddr string, landmarks map[string]graph.Node, g *graph.Graph) {
 	var prevNodeName = parentAddr + "$begin"
 	for i := range block.Stmts {
 		stmt := block.Stmts[i]
 		// Create node.
-		node := g.NewNodeWithData(stmt)
 		nodeName := parentAddr + ":" + strconv.Itoa(i)
+		node := g.NewNodeWithData(&stmtNode{nodeName, stmt})
 		landmarks[nodeName] = node
+		getOrCreateNodeByName(prevNodeName, landmarks, g)
 		// Link to prior stmt node. (special case for first stmt in block.)
-		g.NewEdgeWithData(landmarks[prevNodeName], node, nil)
+		getOrCreateNodesForEdgeWithData(prevNodeName, nodeName, nil, landmarks, g)
 		prevNodeName = nodeName
 		// Do special optional work, depending on stmt type:
 		switch x := stmt.(type) {
 		case *ir.ReturnLocalStmt:
 			// Skip end-of-block stitching, we're bailing.
-			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil)
+			getOrCreateNodesForEdgeWithData(nodeName, parentAddr+"$end", nil, landmarks, g)
 			return
 		case *ir.CallStmt:
 			// Link out to the correct function.
@@ -121,7 +166,7 @@ func addStmtsNodesEdges(block *ir.Block, parentAddr string, landmarks map[string
 			} else {
 				funcName := "funcs." + x.Func
 				// Out edge to the function.
-				g.NewEdgeWithData(node, landmarks[funcName+"$begin"], nil)
+				getOrCreateNodesForEdgeWithData(nodeName, funcName+"$begin", &cfgEdge{"call"}, landmarks, g)
 				// Return edge should be from end-of-func.
 				prevNodeName = "funcs." + x.Func + "$end"
 				continue
@@ -135,31 +180,35 @@ func addStmtsNodesEdges(block *ir.Block, parentAddr string, landmarks map[string
 			}
 		case *ir.BreakStmt:
 			levels := x.Index
-			path := strings.Split(parentAddr, ".")
+			path := strings.Split(parentAddr, "|")
 			// Don't duplicate end-of-block stitching.
 			if levels == 0 {
-				g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil)
+				getOrCreateNodesForEdgeWithData(nodeName, parentAddr+"$end", &cfgEdge{fmt.Sprintf("break %d", levels)}, landmarks, g)
 				return
 			} else {
 				// TODO(philipc): Add some validation either here or elsewhere to ensure we don't jump too high.
 				breakPath := path[:len(path)-int(levels)]
-				breakDestName := strings.Join(breakPath, ".")
+				breakDestName := strings.Join(breakPath, "|")
 				//isnumeric check? determines whether to tag $begin/$end, or else iter by one, and paste in the $begin/$end
-				g.NewEdgeWithData(node, landmarks[breakDestName+"$end"], nil) // TODO: Verify this is right.
+				//g.NewEdgeWithData(node, landmarks[breakDestName+"$end"], &cfgEdge{fmt.Sprintf("break %d", levels)}) // TODO: Verify this is right.
+				getOrCreateNodesForEdgeWithData(nodeName, breakDestName+"$end", &cfgEdge{fmt.Sprintf("break %d", levels)}, landmarks, g)
 				return
 			}
 		case *ir.DotStmt:
 			// Defined/Undefined branches.
-			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+			//g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], &cfgEdge{"undefined"}) // Undefined branch.
+			getOrCreateNodesForEdgeWithData(nodeName, parentAddr+"$end", &cfgEdge{"undefined"}, landmarks, g)
 		case *ir.LenStmt:
 		case *ir.ScanStmt:
 			addStmtsNodesEdges(x.Block, nodeName, landmarks, g)
 			// Defined/Undefined branches.
-			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+			//g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], &cfgEdge{"undefined"}) // Undefined branch.
+			getOrCreateNodesForEdgeWithData(nodeName, parentAddr+"$end", &cfgEdge{"undefined"}, landmarks, g)
 		case *ir.NotStmt:
 			addStmtsNodesEdges(x.Block, nodeName, landmarks, g)
 			// Defined/Undefined branches.
-			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+			//g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], &cfgEdge{"undefined"}) // Undefined branch.
+			getOrCreateNodesForEdgeWithData(nodeName, parentAddr+"$end", &cfgEdge{"undefined"}, landmarks, g)
 		case *ir.AssignIntStmt:
 		case *ir.AssignVarStmt:
 		case *ir.AssignVarOnceStmt:
@@ -172,22 +221,28 @@ func addStmtsNodesEdges(block *ir.Block, parentAddr string, landmarks map[string
 		case *ir.MakeSetStmt:
 		case *ir.EqualStmt:
 			// Defined/Undefined branches.
-			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+			//g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], &cfgEdge{"undefined"}) // Undefined branch.
+			getOrCreateNodesForEdgeWithData(nodeName, parentAddr+"$end", &cfgEdge{"undefined"}, landmarks, g)
 		case *ir.NotEqualStmt:
 			// Defined/Undefined branches.
-			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+			//g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], &cfgEdge{"undefined"}) // Undefined branch.
+			getOrCreateNodesForEdgeWithData(nodeName, parentAddr+"$end", &cfgEdge{"undefined"}, landmarks, g)
 		case *ir.IsArrayStmt:
 			// Defined/Undefined branches.
-			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+			//g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], &cfgEdge{"undefined"}) // Undefined branch.
+			getOrCreateNodesForEdgeWithData(nodeName, parentAddr+"$end", &cfgEdge{"undefined"}, landmarks, g)
 		case *ir.IsObjectStmt:
 			// Defined/Undefined branches.
-			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+			//g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], &cfgEdge{"undefined"}) // Undefined branch.
+			getOrCreateNodesForEdgeWithData(nodeName, parentAddr+"$end", &cfgEdge{"undefined"}, landmarks, g)
 		case *ir.IsDefinedStmt:
 			// Defined/Undefined branches.
-			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+			//g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], &cfgEdge{"undefined"}) // Undefined branch.
+			getOrCreateNodesForEdgeWithData(nodeName, parentAddr+"$end", &cfgEdge{"undefined"}, landmarks, g)
 		case *ir.IsUndefinedStmt:
 			// Defined/Undefined branches.
-			g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], nil) // Undefined branch.
+			//g.NewEdgeWithData(node, landmarks[parentAddr+"$end"], &cfgEdge{"undefined"}) // Undefined branch.
+			getOrCreateNodesForEdgeWithData(nodeName, parentAddr+"$end", &cfgEdge{"undefined"}, landmarks, g)
 		case *ir.ArrayAppendStmt:
 		case *ir.ObjectInsertStmt:
 		case *ir.ObjectInsertOnceStmt:
@@ -200,7 +255,285 @@ func addStmtsNodesEdges(block *ir.Block, parentAddr string, landmarks map[string
 		}
 	}
 	// Stitch up last statement to end-of-block.
-	g.NewEdgeWithData(landmarks[prevNodeName], landmarks[parentAddr+"$end"], nil)
+	//g.NewEdgeWithData(landmarks[prevNodeName], landmarks[parentAddr+"$end"], nil)
+	getOrCreateNodesForEdgeWithData(prevNodeName, parentAddr+"$end", nil, landmarks, g)
+}
+
+func controlFlowGraphToDOT(graphName string, landmarks map[string]graph.Node, g *graph.Graph) string {
+	out := "digraph %s {\n\tnode [ shape=\"rectangle\" ];\n%s\n}"
+	nodes := g.Nodes()
+	edges := g.Edges()
+
+	// Subgraph clusters require some special handling.
+	clusters := map[string][]string{}
+
+	// Dump all nodes into the graphviz output.
+	nodeList := ""
+	for i := range nodes {
+		node := nodes[i]
+		data, _ := node.Data()
+		var nodeName string
+		switch x := data.(type) {
+		case string:
+			nodeName = strings.ReplaceAll(x, "\"", "\\\"")
+		case *stmtNode:
+			nodeName = strings.ReplaceAll(x.name+"|"+stmtToString(x.stmt), "\"", "\\\"")
+		default:
+		}
+		// Handle cluster names:
+		prefix, _, _ := strings.Cut(nodeName, "|")
+		prefix = strings.TrimSuffix(prefix, "$begin")
+		prefix = strings.TrimSuffix(prefix, "$end")
+		clusters[prefix] = append(clusters[prefix], nodeName)
+		nodeList += fmt.Sprintf("\t\"%s\";\n", nodeName)
+	}
+
+	// Dump all edges into the graphviz output (with special label handling).
+	edgeList := ""
+	for i := range edges {
+		edge := edges[i]
+		var source, sink string
+		sourceNode := edge.MustSource()
+		sinkNode := edge.MustSink()
+		data := edge.MustData()
+		// Render edge label, if present.
+		label := ""
+		if v, ok := data.(*cfgEdge); ok {
+			label = v.kind
+		}
+
+		// Render source node name.
+		switch x := sourceNode.MustData().(type) {
+		case string:
+			source = fmt.Sprintf("\"%s\"", strings.ReplaceAll(x, "\"", "\\\""))
+		case *stmtNode:
+			source = fmt.Sprintf("\"%s|%s\"", strings.ReplaceAll(x.name, "\"", "\\\""), stmtToString(x.stmt))
+		default:
+		}
+		// Render sink node name.
+		switch x := sinkNode.MustData().(type) {
+		case string:
+			sink = fmt.Sprintf("\"%s\"", strings.ReplaceAll(x, "\"", "\\\""))
+		case *stmtNode:
+			sink = fmt.Sprintf("\"%s|%s\"", strings.ReplaceAll(x.name, "\"", "\\\""), stmtToString(x.stmt))
+		default:
+		}
+		// Append edge label if needed.
+		if label != "" {
+			edgeList += fmt.Sprintf("\t%s -> %s [ label=\"%s\" ];\n", source, sink, label)
+		} else {
+			edgeList += fmt.Sprintf("\t%s -> %s;\n", source, sink)
+		}
+	}
+
+	subgraphClusters := ""
+	for k, v := range clusters {
+		subgraph := "subgraph \"cluster_%s\" {label = \"%s\";\n%s\n}\n"
+		nodes := ""
+		for i := range v {
+			nodes += fmt.Sprintf("\t\"%s\";\n", v[i])
+		}
+		subgraphClusters += fmt.Sprintf(subgraph, k, k, nodes)
+	}
+
+	out = fmt.Sprintf(out, graphName, nodeList+edgeList+subgraphClusters)
+
+	return out
+}
+
+func PolicyToCFG(sourceModules, entrypointQueries []string) (map[string]graph.Node, *graph.Graph, error) {
+	queries := make([]ast.Body, len(entrypointQueries))
+	for i := range queries {
+		queries[i] = ast.MustParseBody(entrypointQueries[i])
+	}
+	modules := make([]*ast.Module, len(sourceModules))
+	for i := range modules {
+		file := fmt.Sprintf("module-%d.rego", i)
+		m, err := ast.ParseModule(file, sourceModules[i])
+		if err != nil {
+			return nil, nil, err
+		}
+		modules[i] = m
+	}
+	planner := planner.New().WithQueries([]planner.QuerySet{
+		{
+			Name:    "test",
+			Queries: queries,
+		},
+	}).WithModules(modules).WithBuiltinDecls(ast.BuiltinMap)
+	policy, err := planner.Plan()
+	if err != nil {
+		return nil, nil, err
+	}
+	landmarks, out := getLandmarks(policy)
+	return landmarks, out, nil
+}
+
+func stmtToString(stmt ir.Stmt) string {
+	out := "unknown"
+	switch stmt.(type) {
+	case *ir.ReturnLocalStmt:
+		out = "ReturnLocalStmt"
+	case *ir.CallStmt:
+		out = "CallStmt"
+	case *ir.CallDynamicStmt:
+		out = "CallDynamicStmt"
+	case *ir.BlockStmt:
+		out = "BlockStmt"
+	case *ir.BreakStmt:
+		out = "BreakStmt"
+	case *ir.DotStmt:
+		out = "DotStmt"
+	case *ir.LenStmt:
+		out = "LenStmt"
+	case *ir.ScanStmt:
+		out = "ScanStmt"
+	case *ir.NotStmt:
+		out = "NotStmt"
+	case *ir.AssignIntStmt:
+		out = "AssignIntStmt"
+	case *ir.AssignVarStmt:
+		out = "AssignVarStmt"
+	case *ir.AssignVarOnceStmt:
+		out = "AssignVarOnceStmt"
+	case *ir.ResetLocalStmt:
+		out = "ResetLocalStmt"
+	case *ir.MakeNullStmt:
+		out = "MakeNullStmt"
+	case *ir.MakeNumberIntStmt:
+		out = "MakeNumberIntStmt"
+	case *ir.MakeNumberRefStmt:
+		out = "MakeNumberRefStmt"
+	case *ir.MakeArrayStmt:
+		out = "MakeArrayStmt"
+	case *ir.MakeObjectStmt:
+		out = "MakeObjectStmt"
+	case *ir.MakeSetStmt:
+		out = "MakeSetStmt"
+	case *ir.EqualStmt:
+		out = "EqualStmt"
+	case *ir.NotEqualStmt:
+		out = "NotEqualStmt"
+	case *ir.IsArrayStmt:
+		out = "IsArrayStmt"
+	case *ir.IsObjectStmt:
+		out = "IsObjectStmt"
+	case *ir.IsDefinedStmt:
+		out = "IsDefinedStmt"
+	case *ir.IsUndefinedStmt:
+		out = "IsUndefinedStmt"
+	case *ir.ArrayAppendStmt:
+		out = "ArrayAppendStmt"
+	case *ir.ObjectInsertStmt:
+		out = "ObjectInsertStmt"
+	case *ir.ObjectInsertOnceStmt:
+		out = "ObjectInsertOnceStmt"
+	case *ir.ObjectMergeStmt:
+		out = "ObjectMergeStmt"
+	case *ir.SetAddStmt:
+		out = "SetAddStmt"
+	case *ir.WithStmt:
+		out = "WithStmt"
+	case *ir.NopStmt:
+		out = "NopStmt"
+	case *ir.ResultSetAddStmt:
+		out = "ResultSetAddStmt"
+	}
+	return out
+}
+
+// After creating the CFG, we no longer need to worry about the control-flow issues of different stmt types.
+// Instead, we just move node-by-node through the CFG, and split recursively when multiple out-paths exist from a node.
+// This allows us to aggregate all dependencies seen along *every* path.
+// func DepsForPlanCFG(entrypoint string, landmarks map[string]graph.Node, g *graph.Graph) (ast.Set, error) {
+
+// }
+
+// A unit of work for the (implicitly) recursive DFS algorithm.
+// Contains the next graph node + context needed to eval that path.
+type cfgPathTask struct {
+	node      graph.Node
+	localRefs map[int]string
+}
+
+func (cpt cfgPathTask) Copy() cfgPathTask {
+	out := cfgPathTask{}
+	out.node = cpt.node
+	out.localRefs = make(map[int]string, len(cpt.localRefs))
+	for k, v := range cpt.localRefs {
+		out.localRefs[k] = v
+	}
+	return out
+}
+
+// We use the iterative version of the algorithm here to avoid accidentally blowing up the stack. Some of the paths can be *very* long!
+// Because we're doing partial interpretation, we will need to actually check the type of each node, and react appropriately/carry state
+//   along each path. This sucks, but it's not a huge amount of state on average.
+// Requires: Graph has no loops. (Is acyclic.)
+func traceDepsCFGAllSimplePaths(start, end string, landmarks map[string]graph.Node, g *graph.Graph) (ast.Set, error) {
+	ctxStack := []cfgPathTask{}
+	// Pre-populate the stack with the first node.
+	startTask := cfgPathTask{landmarks[start], make(map[int]string)}
+	startTask.localRefs[0] = "input"
+	startTask.localRefs[1] = "data"
+	ctxStack = append(ctxStack, startTask)
+	for len(ctxStack) > 0 {
+		stackTop := len(ctxStack) - 1
+		// There's work items to hack on. Pop the top one, and work on it + track its descendents.
+		curTask := ctxStack[stackTop]
+		ctxStack = ctxStack[:stackTop] // TODO: nil out the last element on the stack?
+		curNode := curTask.node
+		// Modify locals and globals as needed.
+		// TODO: To reduce the memory consumption in the future, we might try *not* blindly copying all the maps. Maybe a COW strategy?
+		childTaskTemplate := curTask.Copy()
+		if v, ok := curNode.MustData().(ir.Stmt); ok {
+			switch v.(type) {
+			case *ir.ReturnLocalStmt:
+			case *ir.CallStmt:
+			case *ir.CallDynamicStmt:
+			case *ir.BlockStmt:
+			case *ir.BreakStmt:
+			case *ir.DotStmt:
+			case *ir.LenStmt:
+			case *ir.ScanStmt:
+			case *ir.NotStmt:
+			case *ir.AssignIntStmt:
+			case *ir.AssignVarStmt:
+			case *ir.AssignVarOnceStmt:
+			case *ir.ResetLocalStmt:
+			case *ir.MakeNullStmt:
+			case *ir.MakeNumberIntStmt:
+			case *ir.MakeNumberRefStmt:
+			case *ir.MakeArrayStmt:
+			case *ir.MakeObjectStmt:
+			case *ir.MakeSetStmt:
+			case *ir.EqualStmt:
+			case *ir.NotEqualStmt:
+			case *ir.IsArrayStmt:
+			case *ir.IsObjectStmt:
+			case *ir.IsDefinedStmt:
+			case *ir.IsUndefinedStmt:
+			case *ir.ArrayAppendStmt:
+			case *ir.ObjectInsertStmt:
+			case *ir.ObjectInsertOnceStmt:
+			case *ir.ObjectMergeStmt:
+			case *ir.SetAddStmt:
+			case *ir.WithStmt:
+			case *ir.NopStmt:
+			case *ir.ResultSetAddStmt:
+			}
+		}
+		// Add all descendents to the stack.
+		err := curNode.ForeachSuccessor(func(n graph.Node) {
+			newTask := childTaskTemplate.Copy()
+			newTask.node = n
+			ctxStack = append(ctxStack, newTask)
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ast.NewSet(), nil
 }
 
 // type executionResult enum {

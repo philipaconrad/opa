@@ -5,12 +5,60 @@
 package dependencies
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"sort"
 	"testing"
 
 	"github.com/open-policy-agent/opa/ast"
+	"github.com/open-policy-agent/opa/internal/ir"
 )
+
+// Works, but is incredibly cursed for laaaaarge DAS bundles.
+func TestDOTBigJSON(t *testing.T) {
+	filename := "plan.json"
+	bs, err := ioutil.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	//query := "data.main.allow"
+	var policy ir.Policy
+	err = json.Unmarshal(bs, &policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	landmarks, g := getLandmarks(&policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := controlFlowGraphToDOT("start", landmarks, g)
+	fmt.Println(out)
+	ioutil.WriteFile("plan.dot", []byte(out), 0644)
+	panic("DEBUG")
+}
+
+func TestDOT(t *testing.T) {
+	module := `
+package policy
+
+import future.keywords
+
+default allow := false
+
+allow {
+    "admin" in input.user.roles
+}
+	`
+	query := "data.policy.allow"
+	landmarks, g, err := PolicyToCFG([]string{module}, []string{query})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := controlFlowGraphToDOT("start", landmarks, g)
+	fmt.Println(out)
+	panic("DEBUG")
+}
 
 type testData struct {
 	ast  string
