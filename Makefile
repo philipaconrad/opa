@@ -60,7 +60,11 @@ S3_RELEASE_BUCKET ?= opa-releases
 FUZZ_TIME ?= 1h
 TELEMETRY_URL ?= #Default empty
 
+ifneq ($($GOOS), windows)
 BUILD_HOSTNAME := $(shell ./build/get-build-hostname.sh)
+else
+BUILD_HOSTNAME := $(shell '[System.Net.Dns]::GetHostByName($env:computerName).HostName')
+endif
 
 RELEASE_BUILD_IMAGE := golang:$(GOVERSION)
 

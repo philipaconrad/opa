@@ -93,6 +93,8 @@ jobs:
         include:
           - os: linux
             run: ubuntu-22.04
+          - os: windows
+            run: windows-latest
           - os: darwin
             run: macos-latest
     steps:
