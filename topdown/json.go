@@ -267,7 +267,7 @@ func toIndex(arr *ast.Array, term *ast.Term) (int, error) {
 	return i, nil
 }
 
-// patchWorkerris a worker that modifies a direct child of a term located
+// patchWorker is a worker that modifies a direct child of a term located
 // at the given key.  It returns the new term, and optionally a result that
 // is passed back to the caller.
 type patchWorker = func(parent, key *ast.Term) (updated, result *ast.Term)
@@ -522,6 +522,260 @@ func jsonPatchTest(target *ast.Term, path ast.Ref, value *ast.Term) *ast.Term {
 
 	return nil
 }
+
+// Data structure notes:
+// unsatKeys lets us crawl from back-to-front to find unsatisfied dependencies.
+// activeHeads keeps track of the frontmost ops in the chain(s) that may exist.
+//     It is updated each time patchChainDAG updates.
+// satisfiedKeys lets us know which keys are guaranteed to be satisfied by 1+ ops later.
+//     Diffing with unsatKeys allows us to see which keys only need to be tested for optimized-away ops.
+// patchChainDAG is the front-to-back orderings of independent ops that we must do to satisfy the patch list.
+//     It is constructed sequentially during the back-to-front crawl for unsatKeys, by adding items to the DAG each time they're removed from unsatKeys.
+//
+
+type PatchSeqDAG struct {
+	unsatKeys     map[string][]int // key -> list of dependent patch idxs
+	satKeys       map[string]int   // key -> satisfying patch idx
+	activeHeads   map[int]struct{} // active patch idx set
+	patchChainDAG [][]int          // massive patch list (nil = unused, [int...] = next patch idxs for that idx)
+}
+
+type jsonPatch struct {
+	op    string
+	path  string
+	from  string
+	value *ast.Term
+}
+
+func (psd *PatchSeqDAG) addUnsat(key string, index int) {
+	ks, ok := psd.unsatKeys[key]
+	if ok {
+		// bail out early if index present.
+		for i := range ks {
+			if ks[i] == index {
+				return
+			}
+		}
+	}
+	// Otherwise, add index to unsat list for the key.
+	psd.unsatKeys[key] = append(psd.unsatKeys[key], index)
+}
+
+func (psd *PatchSeqDAG) delUnsat(key string) ([]int, bool) {
+	ks, ok := psd.unsatKeys[key]
+	delete(psd.unsatKeys, key)
+	return ks, ok
+}
+
+// Constructs the PatchSeqDAG data structure we use to find the meaningful patch chains.
+func BuildPatchSeqDAG(operations *ast.Array) (*PatchSeqDAG, error) {
+	var out PatchSeqDAG
+	for i := operations.Len() - 1; i >= 0; i-- {
+		var object ast.Object
+		var ok bool
+		object, ok = operations.Elem(i).Value.(ast.Object)
+		if !ok {
+			return nil, fmt.Errorf("must be an array of JSON-Patch objects, but element at index %d is not an object", i)
+		}
+		// TODO: Add array/sets to allowed "path" types for patches.
+		patch, err := getPatch(object)
+		if err != nil {
+			return nil, err
+		}
+
+		switch patch.op {
+		case "add":
+			// TODO: Add a sweeping check for downstream paths that we're satisfying?
+			if ks, ok := out.delUnsat(patch.path); ok {
+				out.patchChainDAG = append(out.patchChainDAG, ks)
+				// Move up active head to this patch.
+				out.activeHeads[i] = struct{}{}
+				for idx := range ks {
+					delete(out.activeHeads, idx)
+				}
+			} else {
+				out.patchChainDAG = append(out.patchChainDAG, nil)
+			}
+			// If key not already registered, mark us as the last actor on this key.
+			if _, ok := out.satKeys[patch.path]; !ok {
+				out.satKeys[patch.path] = i
+			}
+			// Add parent key to unsat keys:
+			if parent, ok := getPathPrefix(patch.path); ok {
+				out.addUnsat(parent, i)
+			}
+			//target = jsonPatchAdd(target, path, value)
+		case "remove":
+			// TODO: Add a sweeping check for downstream paths that we're breaking?
+			// If there are dependent patches downstream of us that we are specifically breaking, we can error out early.
+			if ks, ok := out.delUnsat(patch.path); ok {
+				return nil, fmt.Errorf("patch at index %d with op 'remove' breaks patches at indexes %v", i, ks)
+			}
+			out.patchChainDAG = append(out.patchChainDAG, nil)
+			// If key not already registered, mark us as the last actor on this key.
+			if _, ok := out.satKeys[patch.path]; !ok {
+				out.satKeys[patch.path] = i
+				out.activeHeads[i] = struct{}{} // TODO: Is this the correct spot for this?
+			}
+			// TODO: Should we also depend on the parent key?
+			// Add the key we're deleting to the unsat keys:
+			out.addUnsat(patch.path, i)
+			//target, _ = jsonPatchRemove(target, path)
+		case "replace":
+			if ks, ok := out.delUnsat(patch.path); ok {
+				return nil, fmt.Errorf("patch at index %d with op 'replace' breaks patches at indexes %v", i, ks)
+			}
+			out.patchChainDAG = append(out.patchChainDAG, nil)
+			// If key not already registered, mark us as the last actor on this key.
+			if _, ok := out.satKeys[patch.path]; !ok {
+				out.satKeys[patch.path] = i
+			}
+			// TODO: Add parent key to unsat keys?
+			out.addUnsat(patch.path, i)
+			//target = jsonPatchReplace(target, path, value)
+		case "move":
+			// If there are dependent patches downstream of us that we are specifically breaking, we can error out early.
+			if ks, ok := out.delUnsat(patch.from); ok {
+				return nil, fmt.Errorf("patch at index %d with op 'move' breaks patches at indexes %v", i, ks)
+			}
+			// Handle everything downstream of us that this op satisfies.
+			if ks, ok := out.delUnsat(patch.path); ok {
+				out.patchChainDAG = append(out.patchChainDAG, ks)
+				// Move up active head to this patch.
+				out.activeHeads[i] = struct{}{}
+				for idx := range ks {
+					delete(out.activeHeads, idx)
+				}
+			} else {
+				out.patchChainDAG = append(out.patchChainDAG, nil)
+			}
+			// If key not already registered, mark us as the last actor on this key.
+			if _, ok := out.satKeys[patch.path]; !ok {
+				out.satKeys[patch.path] = i
+			}
+			// Add the key we're moving to the unsat keys:
+			out.addUnsat(patch.from, i)
+			//target = jsonPatchMove(target, path, from)
+		case "copy":
+			// Handle everything downstream of us that this op satisfies.
+			if ks, ok := out.delUnsat(patch.path); ok {
+				out.patchChainDAG = append(out.patchChainDAG, ks)
+				// Move up active head to this patch.
+				out.activeHeads[i] = struct{}{}
+				for idx := range ks {
+					delete(out.activeHeads, idx)
+				}
+			} else {
+				out.patchChainDAG = append(out.patchChainDAG, nil)
+			}
+			// If key not already registered, mark us as the last actor on this key.
+			if _, ok := out.satKeys[patch.path]; !ok {
+				out.satKeys[patch.path] = i
+			}
+			// Add the key we're copying to the unsat keys:
+			out.addUnsat(patch.from, i)
+			//target = jsonPatchCopy(target, path, from)
+		case "test":
+			out.patchChainDAG = append(out.patchChainDAG, nil)
+			// If key not already registered, mark us as the last actor on this key.
+			if _, ok := out.satKeys[patch.path]; !ok {
+				out.satKeys[patch.path] = i
+				out.activeHeads[i] = struct{}{}
+			}
+			// Add the key we're testing to the unsat keys:
+			out.addUnsat(patch.path, i)
+			//target = jsonPatchTest(target, path, value)
+		default:
+			return nil, fmt.Errorf("must be an array of JSON-Patch objects")
+		}
+	}
+
+	return &out, nil
+}
+
+// Trims the last chunk off of the JSON path.
+// Used to generate "parent paths" for the unsat system.
+// TODO: Actually write this logic in!
+func getPathPrefix(jsonPath string) (string, bool) {
+	return jsonPath, true
+}
+
+// Generates a list of path suffixes the value satisfies.
+// TODO: Actually write this logic in!
+func getPathSuffixes(t *ast.Term) ([]string, error) {
+	return []string{}, nil
+}
+
+func getPatch(o ast.Object) (jsonPatch, error) {
+	var out jsonPatch
+	var ok bool
+	getAttribute := func(attr string) (*ast.Term, error) {
+		if term := o.Get(ast.StringTerm(attr)); term != nil {
+			return term, nil
+		}
+
+		return nil, fmt.Errorf("missing '%s' attribute", attr)
+	}
+
+	opTerm, err := getAttribute("op")
+	if err != nil {
+		return out, err
+	}
+	op, ok := opTerm.Value.(ast.String)
+	if !ok {
+		return out, fmt.Errorf("attribute 'op' must be a string")
+	}
+	out.op = string(op)
+
+	pathTerm, err := getAttribute("path")
+	if err != nil {
+		return out, err
+	}
+	path, ok := pathTerm.Value.(ast.String)
+	if !ok {
+		return out, fmt.Errorf("attribute 'path' must be a string")
+	}
+	out.path = string(path)
+
+	// Fetch if present:
+	if fromTerm, err := getAttribute("from"); err == nil {
+		from, ok := fromTerm.Value.(ast.String)
+		if !ok {
+			return out, fmt.Errorf("attribute 'from' must be a string")
+		}
+		out.from = string(from)
+	}
+
+	// Fetch if present:
+	if valueTerm, err := getAttribute("value"); err == nil {
+		out.value = valueTerm
+	}
+
+	return out, nil
+}
+
+// Need:
+// - GetXprop() funcs
+// - Get
+
+// TODO: May want to delete the whole record, and return the values slice.
+//
+//	func (psd *PatchSeqDAG) delUnsat(string key, index int) {
+//		ks, ok := psd.unsatKeys[key];
+//		if ok {
+//			// bail out early if index present.
+//			for i := range ks {
+//				if ks[i] == index {
+//					psd.unsatKeys[key] = append(ks[:i], ks[i+1:])
+//					break
+//				}
+//			}
+//		}
+//		// Wipe out the key if no entries remain.
+//		if len(psd.unsatKeys[key]) == 0 {
+//			delete(psd.unsatKeys, key)
+//		}
+//	}
 
 func builtinJSONPatch(_ BuiltinContext, operands []*ast.Term, iter func(*ast.Term) error) error {
 	// JSON patch supports arrays, objects as well as values as the target.
