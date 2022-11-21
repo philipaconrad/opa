@@ -5,6 +5,7 @@
 package topdown
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/open-policy-agent/opa/ast"
@@ -107,6 +108,87 @@ func TestFiltersToObject(t *testing.T) {
 			expected := ast.MustParseTerm(tc.expected)
 			if actual.Compare(expected.Value) != 0 {
 				t.Errorf("Unexpected object from filters:\n\nExpected:\n\t%s\n\nActual:\n\t%s\n\n", expected.Value.String(), actual.String())
+			}
+		})
+	}
+}
+
+// Tests to make sure that the DAG construction handles edge cases properly.
+func TestBuildPatchSeqDAG(t *testing.T) {
+	// These tests focus on the tricky success cases, not on error handling.
+	cases := []struct {
+		note           string
+		object         string
+		patches        []string
+		expUnsatKeys   map[string][]int
+		expActiveHeads map[int]struct{}
+		expPatchChain  map[int][]int
+	}{
+		// Ops on top-level keys only.
+		{
+			note:           "simple add",
+			patches:        []string{`{"op": "add", "path": "/b", "value": 3}`},
+			expUnsatKeys:   map[string][]int{},
+			expActiveHeads: map[int]struct{}{0: {}},
+			expPatchChain:  map[int][]int{0: {0}},
+		},
+		{
+			note:           "simple remove",
+			patches:        []string{`{"op": "remove", "path": "/a"}`},
+			expUnsatKeys:   map[string][]int{"/a": {0}},
+			expActiveHeads: map[int]struct{}{0: {}},
+			expPatchChain:  map[int][]int{0: {0}},
+		},
+		{
+			note:           "simple replace",
+			patches:        []string{`{"op": "replace", "path": "/a", "value": 3}`},
+			expUnsatKeys:   map[string][]int{"/a": {0}},
+			expActiveHeads: map[int]struct{}{0: {}},
+			expPatchChain:  map[int][]int{0: {0}},
+		},
+		{
+			note:           "simple move",
+			patches:        []string{`{"op": "move", "path": "/b", "from": "/a"}`},
+			expUnsatKeys:   map[string][]int{"/a": {0}},
+			expActiveHeads: map[int]struct{}{0: {}},
+			expPatchChain:  map[int][]int{0: {0}},
+		},
+		{
+			note:           "simple copy",
+			patches:        []string{`{"op": "copy", "path": "/b", "from": "/a"}`},
+			expUnsatKeys:   map[string][]int{"/a": {0}},
+			expActiveHeads: map[int]struct{}{0: {}},
+			expPatchChain:  map[int][]int{0: {0}},
+		},
+		{
+			note:           "simple test",
+			patches:        []string{`{"op": "test", "path": "/a", "value": 2}`},
+			expUnsatKeys:   map[string][]int{"/a": {0}},
+			expActiveHeads: map[int]struct{}{0: {}},
+			expPatchChain:  map[int][]int{0: {0}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.note, func(t *testing.T) {
+			patches := ast.NewArray()
+			for i := range tc.patches {
+				patches = patches.Append(ast.MustParseTerm(tc.patches[i]))
+			}
+
+			psd, err := BuildPatchSeqDAG(patches)
+			if err != nil {
+				t.Errorf("unexpected error: %s", err)
+			}
+
+			if !reflect.DeepEqual(tc.expUnsatKeys, psd.unsatKeys) {
+				t.Errorf("Wrong unsat keys generated from patch list:\n\nExpected:\n\t%v\n\nActual:\n\t%v\n\n", tc.expUnsatKeys, psd.unsatKeys)
+			}
+			if !reflect.DeepEqual(tc.expActiveHeads, psd.activeHeads) {
+				t.Errorf("Wrong active heads generated from patch list:\n\nExpected:\n\t%v\n\nActual:\n\t%v\n\n", tc.expActiveHeads, psd.activeHeads)
+			}
+			if !reflect.DeepEqual(tc.expPatchChain, psd.patchChainDAG) {
+				t.Errorf("Wrong patch chain generated from patch list:\n\nExpected:\n\t%v\n\nActual:\n\t%v\n\n", tc.expPatchChain, psd.patchChainDAG)
 			}
 		})
 	}

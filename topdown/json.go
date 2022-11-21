@@ -537,7 +537,16 @@ type PatchSeqDAG struct {
 	unsatKeys     map[string][]int // key -> list of dependent patch idxs
 	satKeys       map[string]int   // key -> satisfying patch idx
 	activeHeads   map[int]struct{} // active patch idx set
-	patchChainDAG [][]int          // massive patch list (nil = unused, [int...] = next patch idxs for that idx)
+	patchChainDAG map[int][]int    // massive patch list (nil = unused, [int...] = next patch idxs for that idx)
+}
+
+func NewPatchSeqDAG() PatchSeqDAG {
+	var out PatchSeqDAG
+	out.unsatKeys = map[string][]int{}
+	out.satKeys = map[string]int{}
+	out.activeHeads = map[int]struct{}{}
+	out.patchChainDAG = map[int][]int{}
+	return out
 }
 
 type jsonPatch struct {
@@ -569,7 +578,7 @@ func (psd *PatchSeqDAG) delUnsat(key string) ([]int, bool) {
 
 // Constructs the PatchSeqDAG data structure we use to find the meaningful patch chains.
 func BuildPatchSeqDAG(operations *ast.Array) (*PatchSeqDAG, error) {
-	var out PatchSeqDAG
+	out := NewPatchSeqDAG()
 	for i := operations.Len() - 1; i >= 0; i-- {
 		var object ast.Object
 		var ok bool
@@ -587,18 +596,19 @@ func BuildPatchSeqDAG(operations *ast.Array) (*PatchSeqDAG, error) {
 		case "add":
 			// TODO: Add a sweeping check for downstream paths that we're satisfying?
 			if ks, ok := out.delUnsat(patch.path); ok {
-				out.patchChainDAG = append(out.patchChainDAG, ks)
+				out.patchChainDAG[i] = ks
 				// Move up active head to this patch.
 				out.activeHeads[i] = struct{}{}
 				for idx := range ks {
 					delete(out.activeHeads, idx)
 				}
 			} else {
-				out.patchChainDAG = append(out.patchChainDAG, nil)
+				out.patchChainDAG[i] = []int{i}
 			}
 			// If key not already registered, mark us as the last actor on this key.
 			if _, ok := out.satKeys[patch.path]; !ok {
 				out.satKeys[patch.path] = i
+				out.activeHeads[i] = struct{}{}
 			}
 			// Add parent key to unsat keys:
 			if parent, ok := getPathPrefix(patch.path); ok {
@@ -611,7 +621,7 @@ func BuildPatchSeqDAG(operations *ast.Array) (*PatchSeqDAG, error) {
 			if ks, ok := out.delUnsat(patch.path); ok {
 				return nil, fmt.Errorf("patch at index %d with op 'remove' breaks patches at indexes %v", i, ks)
 			}
-			out.patchChainDAG = append(out.patchChainDAG, nil)
+			out.patchChainDAG[i] = []int{i}
 			// If key not already registered, mark us as the last actor on this key.
 			if _, ok := out.satKeys[patch.path]; !ok {
 				out.satKeys[patch.path] = i
@@ -625,10 +635,11 @@ func BuildPatchSeqDAG(operations *ast.Array) (*PatchSeqDAG, error) {
 			if ks, ok := out.delUnsat(patch.path); ok {
 				return nil, fmt.Errorf("patch at index %d with op 'replace' breaks patches at indexes %v", i, ks)
 			}
-			out.patchChainDAG = append(out.patchChainDAG, nil)
+			out.patchChainDAG[i] = []int{i}
 			// If key not already registered, mark us as the last actor on this key.
 			if _, ok := out.satKeys[patch.path]; !ok {
 				out.satKeys[patch.path] = i
+				out.activeHeads[i] = struct{}{}
 			}
 			// TODO: Add parent key to unsat keys?
 			out.addUnsat(patch.path, i)
@@ -640,18 +651,19 @@ func BuildPatchSeqDAG(operations *ast.Array) (*PatchSeqDAG, error) {
 			}
 			// Handle everything downstream of us that this op satisfies.
 			if ks, ok := out.delUnsat(patch.path); ok {
-				out.patchChainDAG = append(out.patchChainDAG, ks)
+				out.patchChainDAG[i] = ks
 				// Move up active head to this patch.
 				out.activeHeads[i] = struct{}{}
 				for idx := range ks {
 					delete(out.activeHeads, idx)
 				}
 			} else {
-				out.patchChainDAG = append(out.patchChainDAG, nil)
+				out.patchChainDAG[i] = []int{i}
 			}
 			// If key not already registered, mark us as the last actor on this key.
 			if _, ok := out.satKeys[patch.path]; !ok {
 				out.satKeys[patch.path] = i
+				out.activeHeads[i] = struct{}{}
 			}
 			// Add the key we're moving to the unsat keys:
 			out.addUnsat(patch.from, i)
@@ -659,24 +671,25 @@ func BuildPatchSeqDAG(operations *ast.Array) (*PatchSeqDAG, error) {
 		case "copy":
 			// Handle everything downstream of us that this op satisfies.
 			if ks, ok := out.delUnsat(patch.path); ok {
-				out.patchChainDAG = append(out.patchChainDAG, ks)
+				out.patchChainDAG[i] = ks
 				// Move up active head to this patch.
 				out.activeHeads[i] = struct{}{}
 				for idx := range ks {
 					delete(out.activeHeads, idx)
 				}
 			} else {
-				out.patchChainDAG = append(out.patchChainDAG, nil)
+				out.patchChainDAG[i] = []int{i}
 			}
 			// If key not already registered, mark us as the last actor on this key.
 			if _, ok := out.satKeys[patch.path]; !ok {
 				out.satKeys[patch.path] = i
+				out.activeHeads[i] = struct{}{}
 			}
 			// Add the key we're copying to the unsat keys:
 			out.addUnsat(patch.from, i)
 			//target = jsonPatchCopy(target, path, from)
 		case "test":
-			out.patchChainDAG = append(out.patchChainDAG, nil)
+			out.patchChainDAG[i] = []int{i}
 			// If key not already registered, mark us as the last actor on this key.
 			if _, ok := out.satKeys[patch.path]; !ok {
 				out.satKeys[patch.path] = i
@@ -697,7 +710,11 @@ func BuildPatchSeqDAG(operations *ast.Array) (*PatchSeqDAG, error) {
 // Used to generate "parent paths" for the unsat system.
 // TODO: Actually write this logic in!
 func getPathPrefix(jsonPath string) (string, bool) {
-	return jsonPath, true
+	parts := strings.Split(string(jsonPath), "/")
+	if len(parts)-2 > 0 {
+		return strings.Join(parts[:len(parts)-2], "/"), true
+	}
+	return "", false
 }
 
 // Generates a list of path suffixes the value satisfies.
