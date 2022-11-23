@@ -167,6 +167,35 @@ func TestBuildPatchSeqDAG(t *testing.T) {
 			expActiveHeads: map[int]struct{}{0: {}},
 			expPatchChain:  map[int][]int{0: {0}},
 		},
+		// Op chains:
+		{
+			note: "simple add-remove chain x3",
+			patches: []string{
+				`{"op": "add", "path": "/a", "value": 3}`,
+				`{"op": "remove", "path": "/a"}`,
+				`{"op": "add", "path": "/a", "value": 3}`,
+				`{"op": "remove", "path": "/a"}`,
+				`{"op": "add", "path": "/a", "value": 3}`,
+				`{"op": "remove", "path": "/a"}`,
+			},
+			expUnsatKeys:   map[string][]int{},
+			expActiveHeads: map[int]struct{}{4: {}},
+			expPatchChain:  map[int][]int{0: {1}, 1: {1}, 2: {3}, 3: {3}, 4: {5}, 5: {5}},
+		},
+		{
+			note: "simple add-move-remove chain x2",
+			patches: []string{
+				`{"op": "add", "path": "/a", "value": 3}`,
+				`{"op": "move", "path": "/b", "from": "/a"}`,
+				`{"op": "remove", "path": "/b"}`,
+				`{"op": "add", "path": "/a", "value": 3}`,
+				`{"op": "move", "path": "/b", "from": "/a"}`,
+				`{"op": "remove", "path": "/b"}`,
+			},
+			expUnsatKeys:   map[string][]int{},
+			expActiveHeads: map[int]struct{}{3: {}},
+			expPatchChain:  map[int][]int{0: {1}, 1: {2}, 2: {2}, 3: {4}, 4: {5}, 5: {5}},
+		},
 	}
 
 	for _, tc := range cases {

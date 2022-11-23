@@ -525,25 +525,27 @@ func jsonPatchTest(target *ast.Term, path ast.Ref, value *ast.Term) *ast.Term {
 
 // Data structure notes:
 // unsatKeys lets us crawl from back-to-front to find unsatisfied dependencies.
+// synthUnsatKeys allows us to propagate key dependencies *forward* when a move/copy happens. (Scanned for breakages whenever unsatKeys is scanned. These are "weak" dependencies.)
 // activeHeads keeps track of the frontmost ops in the chain(s) that may exist.
 //     It is updated each time patchChainDAG updates.
-// satisfiedKeys lets us know which keys are guaranteed to be satisfied by 1+ ops later.
+// satKeys lets us know which keys are guaranteed to be satisfied by 1+ ops later.
 //     Diffing with unsatKeys allows us to see which keys only need to be tested for optimized-away ops.
+// synthSatKeys lets us know which synthetic key deps have been satisfied.
 // patchChainDAG is the front-to-back orderings of independent ops that we must do to satisfy the patch list.
 //     It is constructed sequentially during the back-to-front crawl for unsatKeys, by adding items to the DAG each time they're removed from unsatKeys.
 //
 
 type PatchSeqDAG struct {
 	unsatKeys     map[string][]int // key -> list of dependent patch idxs
-	satKeys       map[string]int   // key -> satisfying patch idx
+	lastAssigners map[string]int   // key -> satisfying patch idx
 	activeHeads   map[int]struct{} // active patch idx set
-	patchChainDAG map[int][]int    // massive patch list (nil = unused, [int...] = next patch idxs for that idx)
+	patchChainDAG map[int][]int    // adjacency-list representation of the DAG. cur patch -> next patch indices. cur patch == idx case means end-of-chain.
 }
 
 func NewPatchSeqDAG() PatchSeqDAG {
 	var out PatchSeqDAG
 	out.unsatKeys = map[string][]int{}
-	out.satKeys = map[string]int{}
+	out.lastAssigners = map[string]int{}
 	out.activeHeads = map[int]struct{}{}
 	out.patchChainDAG = map[int][]int{}
 	return out
@@ -556,7 +558,7 @@ type jsonPatch struct {
 	value *ast.Term
 }
 
-func (psd *PatchSeqDAG) addUnsat(key string, index int) {
+func (psd *PatchSeqDAG) AddUnsatKey(key string, index int) {
 	ks, ok := psd.unsatKeys[key]
 	if ok {
 		// bail out early if index present.
@@ -570,15 +572,170 @@ func (psd *PatchSeqDAG) addUnsat(key string, index int) {
 	psd.unsatKeys[key] = append(psd.unsatKeys[key], index)
 }
 
-func (psd *PatchSeqDAG) delUnsat(key string) ([]int, bool) {
+// Used only for "test" ops.
+func (psd *PatchSeqDAG) AddUnsatKeysFromPatchValue(path string, value *ast.Term, index int) {
+	paths := jsonPathsFromTerm(value)
+	// Add dependency on this key existing + all child keys existing.
+	psd.AddUnsatKey(path, index)
+	for i := range paths {
+		psd.AddUnsatKey(path+paths[i], index)
+	}
+}
+
+// TODO: Make this smarter about the "-" path case.
+func (psd *PatchSeqDAG) DeleteUnsatKey(key string) ([]int, bool) {
 	ks, ok := psd.unsatKeys[key]
 	delete(psd.unsatKeys, key)
 	return ks, ok
 }
 
+// We assume that the set of unsat keys that might be affected by the value will be small enough
+// for it to be worth iterating over them most of the time, instead of checking each possible path in the patch value
+// against the unsat keys map. This allows us to scale acceptably in the face of HUGE patch values.
+func (psd *PatchSeqDAG) DeleteUnsatKeysFromPatchValue(path string, value *ast.Term, index int) ([]int, bool) {
+	keysSatisfied := []int{}
+	for k := range psd.unsatKeys {
+		if strings.HasPrefix(k, path) {
+			if jsonPathExistsOnTerm(strings.TrimPrefix(k, path), value) {
+				if satKeys, ok := psd.DeleteUnsatKey(k); ok {
+					keysSatisfied = append(keysSatisfied, satKeys...)
+				}
+			}
+		}
+	}
+	return keysSatisfied, len(keysSatisfied) > 0
+}
+
+// Used during remove/move ops.
+func (psd *PatchSeqDAG) BreakUnsatKeysWithPrefix(pathPrefix string, index int) error {
+	patchesBroken := []int{}
+	for k, v := range psd.unsatKeys {
+		if strings.HasPrefix(k, pathPrefix) {
+			patchesBroken = append(patchesBroken, v...)
+		}
+	}
+	if len(patchesBroken) > 0 {
+		return fmt.Errorf("patch at index %d breaks the following patches: %v", index, patchesBroken)
+	}
+	return nil
+}
+
+// Used during move/copy ops.
+// Takes the path we'll assign to, and then reparents the old paths.
+func (psd *PatchSeqDAG) RewriteUnsatKeysWithPrefix(path, from string, index int) ([]int, bool) {
+	keysSatisfied := []int{}
+	// We delete the old keys, and then recreate them under a new path prefix.
+	for k, v := range psd.unsatKeys {
+		if strings.HasPrefix(k, path) {
+			if satKeys, ok := psd.DeleteUnsatKey(k); ok {
+				keysSatisfied = append(keysSatisfied, satKeys...)
+			}
+			psd.unsatKeys[from+strings.TrimPrefix(k, path)] = v
+		}
+	}
+	return keysSatisfied, len(keysSatisfied) > 0
+}
+
+func (psd *PatchSeqDAG) MarkLastAssigned(path string, index int) {
+	if _, ok := psd.lastAssigners[path]; !ok {
+		psd.lastAssigners[path] = index
+	}
+}
+
+// Add item to patchDAG.
+// To mark a terminating assignment (lastAssigner), we put the index of the patch in.
+func (psd *PatchSeqDAG) AddToPatchDAG(index int, patchList []int) {
+	psd.patchChainDAG[index] = patchList
+}
+
+// Uses lastAssigners + patchChainDAG to tell if this patch is in the critical path for a lastAssigner.
+// Because we run the propagate step after every patch, we only need to check immediate children in the PatchChainDAG.
+// MUST: Always come after `AddToPatchDAG`, otherwise it doesn't have the info to work.
+func (psd *PatchSeqDAG) PropagateActiveHeads(path string, index int) {
+	if v, ok := psd.lastAssigners[path]; ok {
+		// This patch was the lastAssigner.
+		if v == index {
+			fmt.Println("Last Assigner:", path, index)
+			psd.activeHeads[index] = struct{}{}
+			return
+		}
+		// Else, check patchChainDAG, and see if any immediate children are activeHeads.
+		foundActiveHead := false
+		dependents := psd.patchChainDAG[index]
+		for i := range dependents {
+			if _, ok := psd.activeHeads[dependents[i]]; ok {
+				foundActiveHead = true
+				break
+			}
+		}
+		// Remove prior activeHeads, leaving this patch as the head of the chain.
+		if foundActiveHead {
+			for i := range dependents {
+				delete(psd.activeHeads, dependents[i])
+			}
+			psd.activeHeads[index] = struct{}{}
+		}
+	}
+}
+
+// We use the Find function to discover if the child key exists.
+func jsonPathExistsOnTerm(path string, term *ast.Term) bool {
+	if path == "" {
+		return false
+	}
+	var pathSegments ast.Ref
+	parts := strings.Split(strings.TrimLeft(string(path), "/"), "/")
+	for _, part := range parts {
+		part = strings.ReplaceAll(strings.ReplaceAll(part, "~1", "/"), "~0", "~")
+		pathSegments = append(pathSegments, ast.StringTerm(part))
+	}
+	// Membership check.
+	_, err := term.Value.Find(pathSegments)
+	return err == nil
+}
+
+func jsonPathsFromTerm(value *ast.Term) []string {
+	var out []string
+
+	switch x := value.Value.(type) {
+	case ast.Object:
+		ki := x.KeysIterator()
+		for k, more := ki.Next(); more; k, more = ki.Next() {
+			keyString := strings.TrimSuffix(strings.TrimPrefix(x.String(), "\""), "\"")
+			v := x.Get(k)
+			paths := jsonPathsFromTerm(v)
+			out = make([]string, 0, len(paths))
+			for j := range paths {
+				out = append(out, "/"+keyString+"/"+paths[j])
+			}
+		}
+	case *ast.Array:
+		for i := 0; i < x.Len(); i++ {
+			paths := jsonPathsFromTerm(x.Elem(i))
+			out = make([]string, 0, len(paths))
+			for j := range paths {
+				out = append(out, "/"+strconv.FormatInt(int64(i), 10)+"/"+paths[j])
+			}
+		}
+	case ast.Set:
+		items := x.Slice()
+		for i := 0; i < x.Len(); i++ {
+			paths := jsonPathsFromTerm(items[i])
+			out = make([]string, 0, len(paths))
+			for j := range paths {
+				out = append(out, "/"+strconv.FormatInt(int64(i), 10)+"/"+paths[j])
+			}
+		}
+	default:
+		out = []string{}
+	}
+
+	return out
+}
+
 // Constructs the PatchSeqDAG data structure we use to find the meaningful patch chains.
 func BuildPatchSeqDAG(operations *ast.Array) (*PatchSeqDAG, error) {
-	out := NewPatchSeqDAG()
+	psd := NewPatchSeqDAG()
 	for i := operations.Len() - 1; i >= 0; i-- {
 		var object ast.Object
 		var ok bool
@@ -594,133 +751,84 @@ func BuildPatchSeqDAG(operations *ast.Array) (*PatchSeqDAG, error) {
 
 		switch patch.op {
 		case "add":
-			// TODO: Add a sweeping check for downstream paths that we're satisfying?
-			if ks, ok := out.delUnsat(patch.path); ok {
-				out.patchChainDAG[i] = ks
-				// Move up active head to this patch.
-				out.activeHeads[i] = struct{}{}
-				for idx := range ks {
-					delete(out.activeHeads, idx)
-				}
+			parent, ok := getPathPrefix(patch.path)
+			if ok {
+				psd.AddUnsatKey(parent, i) // The path was not a top-level key.
+			}
+			psd.MarkLastAssigned(patch.path, i) // Marks as last-assigner if truly the last one.
+			deps1, ok1 := psd.DeleteUnsatKeysFromPatchValue(patch.path, patch.value, i)
+			deps2, ok2 := psd.DeleteUnsatKey(patch.path)
+			deps := make([]int, 0, len(deps1)+len(deps2))
+			if !ok1 && !ok2 {
+				deps = []int{i}
 			} else {
-				out.patchChainDAG[i] = []int{i}
+				deps = append(deps, deps1...)
+				deps = append(deps, deps2...)
 			}
-			// If key not already registered, mark us as the last actor on this key.
-			if _, ok := out.satKeys[patch.path]; !ok {
-				out.satKeys[patch.path] = i
-				out.activeHeads[i] = struct{}{}
-			}
-			// Add parent key to unsat keys:
-			if parent, ok := getPathPrefix(patch.path); ok {
-				out.addUnsat(parent, i)
-			}
-			//target = jsonPatchAdd(target, path, value)
+			psd.AddToPatchDAG(i, deps)
+			psd.PropagateActiveHeads(patch.path, i) // Propagates the active-heads status up.
 		case "remove":
-			// TODO: Add a sweeping check for downstream paths that we're breaking?
-			// If there are dependent patches downstream of us that we are specifically breaking, we can error out early.
-			if ks, ok := out.delUnsat(patch.path); ok {
-				return nil, fmt.Errorf("patch at index %d with op 'remove' breaks patches at indexes %v", i, ks)
-			}
-			out.patchChainDAG[i] = []int{i}
-			// If key not already registered, mark us as the last actor on this key.
-			if _, ok := out.satKeys[patch.path]; !ok {
-				out.satKeys[patch.path] = i
-				out.activeHeads[i] = struct{}{} // TODO: Is this the correct spot for this?
-			}
-			// TODO: Should we also depend on the parent key?
-			// Add the key we're deleting to the unsat keys:
-			out.addUnsat(patch.path, i)
-			//target, _ = jsonPatchRemove(target, path)
+			psd.BreakUnsatKeysWithPrefix(patch.path, i)
+			psd.AddUnsatKey(patch.path, i)
+			psd.MarkLastAssigned(patch.path, i) // Marks as last-assigner if truly the last one.
+			psd.AddToPatchDAG(i, []int{i})
+			psd.PropagateActiveHeads(patch.path, i) // Propagates the active-heads status up.
 		case "replace":
-			if ks, ok := out.delUnsat(patch.path); ok {
-				return nil, fmt.Errorf("patch at index %d with op 'replace' breaks patches at indexes %v", i, ks)
+			psd.MarkLastAssigned(patch.path, i) // Marks as last-assigner if truly the last one.
+			deps1, ok1 := psd.DeleteUnsatKeysFromPatchValue(patch.path, patch.value, i)
+			deps2, ok2 := psd.DeleteUnsatKey(patch.path)
+			deps := make([]int, 0, len(deps1)+len(deps2))
+			if !ok1 && !ok2 {
+				deps = []int{i}
+			} else {
+				deps = append(deps, deps1...)
+				deps = append(deps, deps2...)
 			}
-			out.patchChainDAG[i] = []int{i}
-			// If key not already registered, mark us as the last actor on this key.
-			if _, ok := out.satKeys[patch.path]; !ok {
-				out.satKeys[patch.path] = i
-				out.activeHeads[i] = struct{}{}
-			}
-			// TODO: Add parent key to unsat keys?
-			out.addUnsat(patch.path, i)
-			//target = jsonPatchReplace(target, path, value)
+			psd.AddUnsatKey(patch.path, i)
+			psd.AddToPatchDAG(i, deps)
+			psd.PropagateActiveHeads(patch.path, i) // Propagates the active-heads status up.
 		case "move":
-			// If there are dependent patches downstream of us that we are specifically breaking, we can error out early.
-			if ks, ok := out.delUnsat(patch.from); ok {
-				return nil, fmt.Errorf("patch at index %d with op 'move' breaks patches at indexes %v", i, ks)
+			psd.BreakUnsatKeysWithPrefix(patch.from, i) // Ensure we get an error from the implied removal.
+			deps, ok := psd.RewriteUnsatKeysWithPrefix(patch.path, patch.from, i)
+			if !ok {
+				deps = []int{i}
 			}
-			// Handle everything downstream of us that this op satisfies.
-			if ks, ok := out.delUnsat(patch.path); ok {
-				out.patchChainDAG[i] = ks
-				// Move up active head to this patch.
-				out.activeHeads[i] = struct{}{}
-				for idx := range ks {
-					delete(out.activeHeads, idx)
-				}
-			} else {
-				out.patchChainDAG[i] = []int{i}
-			}
-			// If key not already registered, mark us as the last actor on this key.
-			if _, ok := out.satKeys[patch.path]; !ok {
-				out.satKeys[patch.path] = i
-				out.activeHeads[i] = struct{}{}
-			}
-			// Add the key we're moving to the unsat keys:
-			out.addUnsat(patch.from, i)
-			//target = jsonPatchMove(target, path, from)
+			psd.AddUnsatKey(patch.from, i)
+			psd.MarkLastAssigned(patch.path, i)
+			psd.AddToPatchDAG(i, deps)
+			psd.PropagateActiveHeads(patch.path, i) // Propagates the active-heads status up.
 		case "copy":
-			// Handle everything downstream of us that this op satisfies.
-			if ks, ok := out.delUnsat(patch.path); ok {
-				out.patchChainDAG[i] = ks
-				// Move up active head to this patch.
-				out.activeHeads[i] = struct{}{}
-				for idx := range ks {
-					delete(out.activeHeads, idx)
-				}
-			} else {
-				out.patchChainDAG[i] = []int{i}
+			deps, ok := psd.RewriteUnsatKeysWithPrefix(patch.path, patch.from, i)
+			if !ok {
+				deps = []int{i}
 			}
-			// If key not already registered, mark us as the last actor on this key.
-			if _, ok := out.satKeys[patch.path]; !ok {
-				out.satKeys[patch.path] = i
-				out.activeHeads[i] = struct{}{}
-			}
-			// Add the key we're copying to the unsat keys:
-			out.addUnsat(patch.from, i)
-			//target = jsonPatchCopy(target, path, from)
+			psd.AddUnsatKey(patch.from, i)
+			psd.MarkLastAssigned(patch.path, i)
+			psd.AddToPatchDAG(i, deps)
+			psd.PropagateActiveHeads(patch.path, i) // Propagates the active-heads status up.
 		case "test":
-			out.patchChainDAG[i] = []int{i}
-			// If key not already registered, mark us as the last actor on this key.
-			if _, ok := out.satKeys[patch.path]; !ok {
-				out.satKeys[patch.path] = i
-				out.activeHeads[i] = struct{}{}
-			}
-			// Add the key we're testing to the unsat keys:
-			out.addUnsat(patch.path, i)
-			//target = jsonPatchTest(target, path, value)
+			psd.AddUnsatKey(patch.path, i)
+			psd.AddUnsatKeysFromPatchValue(patch.path, patch.value, i)
+			psd.MarkLastAssigned(patch.path, i)
+			psd.AddToPatchDAG(i, []int{i})
+			psd.PropagateActiveHeads(patch.path, i) // Propagates the active-heads status up.
 		default:
 			return nil, fmt.Errorf("must be an array of JSON-Patch objects")
 		}
 	}
 
-	return &out, nil
+	return &psd, nil
 }
 
 // Trims the last chunk off of the JSON path.
 // Used to generate "parent paths" for the unsat system.
-// TODO: Actually write this logic in!
 func getPathPrefix(jsonPath string) (string, bool) {
-	parts := strings.Split(string(jsonPath), "/")
-	if len(parts)-2 > 0 {
-		return strings.Join(parts[:len(parts)-2], "/"), true
+	temp := strings.TrimPrefix(jsonPath, "/")
+	_, after, found := strings.Cut(temp, "/")
+	if found {
+		return "/" + after, true
 	}
 	return "", false
-}
-
-// Generates a list of path suffixes the value satisfies.
-// TODO: Actually write this logic in!
-func getPathSuffixes(t *ast.Term) ([]string, error) {
-	return []string{}, nil
 }
 
 func getPatch(o ast.Object) (jsonPatch, error) {
