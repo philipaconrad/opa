@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/open-policy-agent/opa/util"
 )
@@ -422,17 +423,41 @@ func (t *Object) Select(name interface{}) Type {
 }
 
 // Any represents a dynamic type.
-type Any []Type
+// We lazily sort this type for performance reasons.
+type Any struct {
+	types     []Type
+	sortGuard *sync.Once
+}
 
 // A represents the superset of all types.
 var A = NewAny()
 
+func (t Any) Len() int {
+	return len(t.types)
+}
+
+func (t *Any) sortedSlice() []Type {
+	t.sortGuard.Do(func() {
+		sort.Sort(typeSlice(t.types))
+	})
+	return t.types
+}
+
+func (t Any) Slice() []Type {
+	return t.sortedSlice()
+}
+
 // NewAny returns a new Any type.
 func NewAny(of ...Type) Any {
-	sl := make(Any, len(of))
+	sl := make([]Type, len(of))
 	copy(sl, of)
 	sort.Sort(typeSlice(sl))
-	return sl
+	done := new(sync.Once)
+	done.Do(func() {})
+	return Any{
+		types:     sl,
+		sortGuard: done,
+	}
 }
 
 // Contains returns true if t is a superset of other.
@@ -442,14 +467,15 @@ func (t Any) Contains(other Type) bool {
 	}
 	// Note(philipc): We used to do this as a linear search.
 	// Since this is always sorted, we can use a binary search instead.
-	i := sort.Search(len(t), func(i int) bool {
-		return Compare(t[i], other) >= 0
+	st := t.sortedSlice()
+	i := sort.Search(t.Len(), func(i int) bool {
+		return Compare(st[i], other) >= 0
 	})
-	if i < len(t) && Compare(t[i], other) == 0 {
+	if i < t.Len() && Compare(st[i], other) == 0 {
 		// x is present at t[i]
 		return true
 	}
-	return len(t) == 0
+	return t.Len() == 0
 }
 
 // MarshalJSON returns the JSON encoding of t.
@@ -461,8 +487,8 @@ func (t Any) toMap() map[string]interface{} {
 	repr := map[string]interface{}{
 		"type": t.typeMarker(),
 	}
-	if len(t) != 0 {
-		repr["of"] = []Type(t)
+	if t.Len() != 0 {
+		repr["of"] = []Type(t.sortedSlice())
 	}
 	return repr
 }
@@ -475,43 +501,57 @@ func (t Any) Merge(other Type) Any {
 	if t.Contains(other) {
 		return t
 	}
-	cpy := make(Any, len(t)+1)
-	idx := sort.Search(len(t), func(i int) bool {
-		return Compare(t[i], other) >= 0
-	})
-	copy(cpy, t[:idx])
-	cpy[idx] = other
-	copy(cpy[idx+1:], t[idx:])
-	return cpy
+	return Any{
+		types:     append(t.types, other),
+		sortGuard: new(sync.Once),
+	}
 }
 
 // Union returns a new Any type that is the union of the two Any types.
 func (t Any) Union(other Any) Any {
-	if len(t) == 0 {
+	if t.Len() == 0 {
 		return t
 	}
-	if len(other) == 0 {
+	if other.Len() == 0 {
 		return other
 	}
-	cpy := make(Any, len(t))
-	copy(cpy, t)
-	for i := range other {
-		if !cpy.Contains(other[i]) {
-			cpy = append(cpy, other[i])
+	out := make([]Type, 0, t.Len())
+	a := t.sortedSlice()
+	b := other.sortedSlice()
+	aIdx := 0
+	bIdx := 0
+	// Merge the two sorted slices together the hard way.
+	for aIdx < t.Len() && bIdx < other.Len() {
+		cmp := Compare(a[aIdx], b[bIdx])
+		switch cmp {
+		case -1:
+			out = append(out, a[aIdx])
+			aIdx++
+		case 0:
+			out = append(out, a[aIdx])
+			aIdx++
+			bIdx++
+		case 1:
+			out = append(out, b[bIdx])
+			bIdx++
 		}
 	}
-	sort.Sort(typeSlice(cpy))
-	return cpy
+	done := new(sync.Once)
+	done.Do(func() {})
+	return Any{
+		types:     out,
+		sortGuard: done,
+	}
 }
 
 func (t Any) String() string {
 	prefix := "any"
-	if len(t) == 0 {
+	if t.Len() == 0 {
 		return prefix
 	}
-	buf := make([]string, len(t))
-	for i := range t {
-		buf[i] = Sprint(t[i])
+	buf := make([]string, t.Len())
+	for i := range t.sortedSlice() {
+		buf[i] = Sprint(t.types[i])
 	}
 	return prefix + "<" + strings.Join(buf, ", ") + ">"
 }
@@ -782,8 +822,8 @@ func Compare(a, b Type) int {
 		}
 		return Compare(setA.of, setB.of)
 	case Any:
-		sl1 := typeSlice(a.(Any))
-		sl2 := typeSlice(b.(Any))
+		sl1 := typeSlice(a.(Any).Slice())
+		sl2 := typeSlice(b.(Any).Slice())
 		return typeSliceCompare(sl1, sl2)
 	case *Function:
 		fA := a.(*Function)
@@ -876,9 +916,10 @@ func Select(a Type, x interface{}) Type {
 			return A
 		}
 		var tpe Type
-		for i := range a {
+		st := a.sortedSlice()
+		for i := range st {
 			// TODO(tsandall): test nil/nil
-			tpe = Or(Select(a[i], x), tpe)
+			tpe = Or(Select(st[i], x), tpe)
 		}
 		return tpe
 	default:
@@ -910,8 +951,9 @@ func Keys(a Type) Type {
 			return A
 		}
 		var tpe Type
-		for i := range a {
-			tpe = Or(Keys(a[i]), tpe)
+		st := a.sortedSlice()
+		for i := range st {
+			tpe = Or(Keys(st[i]), tpe)
 		}
 		return tpe
 	}
@@ -943,8 +985,9 @@ func Values(a Type) Type {
 			return A
 		}
 		var tpe Type
-		for i := range a {
-			tpe = Or(Values(a[i]), tpe)
+		st := a.sortedSlice()
+		for i := range st {
+			tpe = Or(Values(st[i]), tpe)
 		}
 		return tpe
 	}

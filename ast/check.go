@@ -479,8 +479,9 @@ func unify1(env *TypeEnv, term *Term, tpe types.Type, union bool) bool {
 				return true
 			}
 			unifies := false
-			for i := range tpe {
-				unifies = unify1(env, term, tpe[i], true) || unifies
+			tpeSlice := tpe.Slice()
+			for i := range tpeSlice {
+				unifies = unify1(env, term, tpeSlice[i], true) || unifies
 			}
 			return unifies
 		}
@@ -498,8 +499,9 @@ func unify1(env *TypeEnv, term *Term, tpe types.Type, union bool) bool {
 				return true
 			}
 			unifies := false
-			for i := range tpe {
-				unifies = unify1(env, term, tpe[i], true) || unifies
+			tpeSlice := tpe.Slice()
+			for i := range tpeSlice {
+				unifies = unify1(env, term, tpeSlice[i], true) || unifies
 			}
 			return unifies
 		}
@@ -516,8 +518,9 @@ func unify1(env *TypeEnv, term *Term, tpe types.Type, union bool) bool {
 				return true
 			}
 			unifies := false
-			for i := range tpe {
-				unifies = unify1(env, term, tpe[i], true) || unifies
+			tpeSlice := tpe.Slice()
+			for i := range tpeSlice {
+				unifies = unify1(env, term, tpeSlice[i], true) || unifies
 			}
 			return unifies
 		}
@@ -834,12 +837,13 @@ func unifiesAny(a types.Any, b types.Type) bool {
 	if _, ok := b.(*types.Function); ok {
 		return false
 	}
-	for i := range a {
-		if unifies(a[i], b) {
+	st := a.Slice()
+	for i := range st {
+		if unifies(st[i], b) {
 			return true
 		}
 	}
-	return len(a) == 0
+	return a.Len() == 0
 }
 
 func unifiesArrays(a, b *types.Array) bool {
@@ -1057,7 +1061,8 @@ func getOneOfForType(tpe types.Type) (result []Value) {
 		}
 
 	case types.Any:
-		for _, object := range tpe {
+		tpeSlice := tpe.Slice()
+		for _, object := range tpeSlice {
 			objRes := getOneOfForType(object)
 			result = append(result, objRes...)
 		}
