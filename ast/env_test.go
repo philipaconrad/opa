@@ -73,7 +73,7 @@ func TestInsertIntoObject(t *testing.T) {
 			tpe:  types.B,
 			expected: types.NewObject(
 				nil,
-				types.NewDynamicProperty(types.S, types.Any{types.B, types.S})),
+				types.NewDynamicProperty(types.S, types.NewAny(types.B, types.S))),
 		},
 		{
 			note: "any type value inserted",
@@ -95,7 +95,7 @@ func TestInsertIntoObject(t *testing.T) {
 			tpe:  types.S,
 			expected: types.NewObject(
 				nil,
-				types.NewDynamicProperty(types.Any{types.N, types.S}, types.S)),
+				types.NewDynamicProperty(types.NewAny(types.N, types.S), types.S)),
 		},
 		{
 			note: "other type key and value inserted",
@@ -106,7 +106,7 @@ func TestInsertIntoObject(t *testing.T) {
 			tpe:  types.B,
 			expected: types.NewObject(
 				nil,
-				types.NewDynamicProperty(types.Any{types.N, types.S}, types.Any{types.B, types.S})),
+				types.NewDynamicProperty(types.NewAny(types.N, types.S), types.NewAny(types.B, types.S))),
 		},
 		{
 			note: "any type value present, string inserted",
@@ -143,10 +143,10 @@ func TestInsertIntoObject(t *testing.T) {
 			tpe:  types.S,
 			expected: types.NewObject(
 				nil,
-				types.NewDynamicProperty(types.Any{types.N, types.S}, // b
-					types.Any{types.S,
+				types.NewDynamicProperty(types.NewAny(types.N, types.S), // b
+					types.NewAny(types.S,
 						types.NewObject(nil, types.NewDynamicProperty(types.S, // c
-							types.NewObject(nil, types.NewDynamicProperty(types.S, types.S))))})), // d
+							types.NewObject(nil, types.NewDynamicProperty(types.S, types.S))))))), // d
 		},
 		{
 			note: "long path, dynamic overlap with object",
@@ -159,11 +159,11 @@ func TestInsertIntoObject(t *testing.T) {
 			expected: types.NewObject(
 				nil,
 				types.NewDynamicProperty(types.S, // b
-					types.Any{
+					types.NewAny(
 						types.NewObject(nil, types.NewDynamicProperty(types.S, types.N)),
 						types.NewObject(nil, types.NewDynamicProperty(types.S, // c
 							types.NewObject(nil, types.NewDynamicProperty(types.S, types.S)))), // d
-					})),
+					))),
 		},
 		{
 			note: "long path, dynamic overlap with object (2)",
@@ -177,12 +177,12 @@ func TestInsertIntoObject(t *testing.T) {
 			expected: types.NewObject(
 				nil,
 				types.NewDynamicProperty(types.S,
-					types.Any{ // Objects aren't merged, as that would become very complicated if they contain static components
+					types.NewAny( // Objects aren't merged, as that would become very complicated if they contain static components
 						types.NewObject(nil, types.NewDynamicProperty(types.S,
 							types.NewObject(nil, types.NewDynamicProperty(types.S, types.N)))),
 						types.NewObject(nil, types.NewDynamicProperty(types.S,
 							types.NewObject(nil, types.NewDynamicProperty(types.S, types.S)))),
-					})),
+					))),
 		},
 		{
 			note: "long path, dynamic overlap with different value type",
@@ -194,9 +194,9 @@ func TestInsertIntoObject(t *testing.T) {
 			expected: types.NewObject(
 				nil,
 				types.NewDynamicProperty(types.S, // b
-					types.Any{types.S,
+					types.NewAny(types.S,
 						types.NewObject(nil, types.NewDynamicProperty(types.S, // c
-							types.NewObject(nil, types.NewDynamicProperty(types.S, types.S))))})), // d
+							types.NewObject(nil, types.NewDynamicProperty(types.S, types.S))))))), // d
 		},
 	}
 
@@ -281,7 +281,7 @@ func TestTypeTreeNode_Insert(t *testing.T) {
 				{
 					path: MustParseRef("data.a.b"),
 					tpe: types.NewObject(nil, types.NewDynamicProperty(
-						types.Any{types.B, types.N, types.S}, types.Any{types.B, types.S})),
+						types.NewAny(types.B, types.N, types.S), types.NewAny(types.B, types.S))),
 				},
 			},
 		},
@@ -305,8 +305,8 @@ func TestTypeTreeNode_Insert(t *testing.T) {
 				{
 					path: MustParseRef("data.a.b"),
 					tpe: types.NewObject(nil, types.NewDynamicProperty(
-						types.Any{types.B, types.N, types.S},
-						types.Any{types.B, types.S},
+						types.NewAny(types.B, types.N, types.S),
+						types.NewAny(types.B, types.S),
 					)),
 				},
 			},
@@ -327,8 +327,8 @@ func TestTypeTreeNode_Insert(t *testing.T) {
 				{
 					path: MustParseRef("data.a.b"),
 					tpe: types.NewObject(nil, types.NewDynamicProperty(
-						types.Any{types.N, types.S},
-						types.Any{types.B, types.S},
+						types.NewAny(types.N, types.S),
+						types.NewAny(types.B, types.S),
 					)),
 				},
 			},
@@ -352,14 +352,14 @@ func TestTypeTreeNode_Insert(t *testing.T) {
 			expected: []pathAndType{
 				{
 					path: MustParseRef("data.a.b"),
-					tpe: types.Any{
+					tpe: types.NewAny(
 						types.NewObject(
 							[]*types.StaticProperty{types.NewStaticProperty("foo", types.N)},
 							types.NewDynamicProperty(types.N, types.B)),
 						types.NewObject(
 							[]*types.StaticProperty{types.NewStaticProperty("bar", types.S)},
 							types.NewDynamicProperty(types.S, types.S)),
-					},
+					),
 				},
 			},
 		},
@@ -382,14 +382,14 @@ func TestTypeTreeNode_Insert(t *testing.T) {
 			expected: []pathAndType{
 				{
 					path: MustParseRef("data.a.b"),
-					tpe: types.Any{
+					tpe: types.NewAny(
 						types.NewObject(
 							nil,
 							types.NewDynamicProperty(types.N, types.B)),
 						types.NewObject(
 							[]*types.StaticProperty{types.NewStaticProperty("bar", types.S)},
 							types.NewDynamicProperty(types.S, types.S)),
-					},
+					),
 				},
 			},
 		},
@@ -412,14 +412,14 @@ func TestTypeTreeNode_Insert(t *testing.T) {
 			expected: []pathAndType{
 				{
 					path: MustParseRef("data.a.b"),
-					tpe: types.Any{
+					tpe: types.NewAny(
 						types.NewObject(
 							[]*types.StaticProperty{types.NewStaticProperty("foo", types.N)},
 							types.NewDynamicProperty(types.N, types.B)),
 						types.NewObject(
 							nil,
 							types.NewDynamicProperty(types.S, types.S)),
-					},
+					),
 				},
 			},
 		},
@@ -448,14 +448,14 @@ func TestTypeTreeNode_Insert(t *testing.T) {
 			expected: []pathAndType{
 				{
 					path: MustParseRef("data.a.b"),
-					tpe: types.Any{
+					tpe: types.NewAny(
 						types.NewObject(
 							[]*types.StaticProperty{types.NewStaticProperty("foo", types.N)},
 							types.NewDynamicProperty(types.N, types.B)),
 						types.NewObject(
 							nil,
-							types.NewDynamicProperty(types.Any{types.N, types.S}, types.Any{types.B, types.S})),
-					},
+							types.NewDynamicProperty(types.NewAny(types.N, types.S), types.NewAny(types.B, types.S))),
+					),
 				},
 			},
 		},
@@ -475,8 +475,8 @@ func TestTypeTreeNode_Insert(t *testing.T) {
 				{
 					path: MustParseRef("data.a.b"),
 					tpe: types.NewObject(nil, types.NewDynamicProperty(
-						types.Any{types.N, types.S},
-						types.Any{types.B, types.NewObject(nil, types.NewDynamicProperty(types.B, types.N))},
+						types.NewAny(types.N, types.S),
+						types.NewAny(types.B, types.NewObject(nil, types.NewDynamicProperty(types.B, types.N))),
 					)),
 				},
 			},
@@ -529,8 +529,8 @@ func TestTypeTreeInsert(t *testing.T) {
 	expected := types.NewObject(
 		nil,
 		types.NewDynamicProperty(
-			types.Any{types.N, types.S},
-			types.Any{types.B, types.S, types.NewObject(nil, types.NewDynamicProperty(types.S, types.N))}),
+			types.NewAny(types.N, types.S),
+			types.NewAny(types.B, types.S, types.NewObject(nil, types.NewDynamicProperty(types.S, types.N)))),
 	)
 	if types.Compare(actual, expected) != 0 {
 		t.Fatalf("Expected %v but got %v", expected, actual)
@@ -550,8 +550,8 @@ func TestTypeTreeInsert(t *testing.T) {
 	expected = types.NewObject(
 		nil,
 		types.NewDynamicProperty(
-			types.Any{types.B, types.N, types.S},
-			types.Any{types.B, types.S, types.NewObject(nil, types.NewDynamicProperty(types.S, types.N))}),
+			types.NewAny(types.B, types.N, types.S),
+			types.NewAny(types.B, types.S, types.NewObject(nil, types.NewDynamicProperty(types.S, types.N)))),
 	)
 	if types.Compare(actual, expected) != 0 {
 		t.Fatalf("Expected %v but got %v", expected, actual)

@@ -30,7 +30,6 @@ func newTypeEnv(f func() *typeChecker) *TypeEnv {
 
 // Get returns the type of x.
 func (env *TypeEnv) Get(x interface{}) types.Type {
-
 	if term, ok := x.(*Term); ok {
 		x = term.Value
 	}
@@ -68,20 +67,39 @@ func (env *TypeEnv) Get(x interface{}) types.Type {
 		static := []*types.StaticProperty{}
 		var dynamic *types.DynamicProperty
 
-		x.Foreach(func(k, v *Term) {
+		// x.Foreach(func(k, v *Term) {
+		// 	if IsConstant(k.Value) {
+		// 		kjson, err := JSON(k.Value)
+		// 		if err == nil {
+		// 			tpe := env.Get(v)
+		// 			static = append(static, types.NewStaticProperty(kjson, tpe))
+		// 			return
+		// 		}
+		// 	}
+		// 	// Can't handle it as a static property, fallback to dynamic
+		// 	typeK := env.Get(k.Value)
+		// 	typeV := env.Get(v.Value)
+		// 	dynamic = types.NewDynamicProperty(typeK, typeV)
+		// })
+		// Note(philipc): Try using KeysIterator here to prune out a closure.
+		ki := x.KeysIterator()
+		for k, more := ki.Next(); more; k, more = ki.Next() {
+			// Walk(w, k)
+			// Walk(w, x.Get(k))
+			v := x.Get(k)
 			if IsConstant(k.Value) {
 				kjson, err := JSON(k.Value)
 				if err == nil {
 					tpe := env.Get(v)
 					static = append(static, types.NewStaticProperty(kjson, tpe))
-					return
+					continue
 				}
 			}
 			// Can't handle it as a static property, fallback to dynamic
 			typeK := env.Get(k.Value)
 			typeV := env.Get(v.Value)
 			dynamic = types.NewDynamicProperty(typeK, typeV)
-		})
+		}
 
 		if len(static) == 0 && dynamic == nil {
 			dynamic = types.NewDynamicProperty(types.A, types.A)
@@ -144,7 +162,6 @@ func (env *TypeEnv) Get(x interface{}) types.Type {
 }
 
 func (env *TypeEnv) getRef(ref Ref) types.Type {
-
 	node := env.tree.Child(ref[0].Value)
 	if node == nil {
 		return env.getRefFallback(ref)
@@ -154,7 +171,6 @@ func (env *TypeEnv) getRef(ref Ref) types.Type {
 }
 
 func (env *TypeEnv) getRefFallback(ref Ref) types.Type {
-
 	if env.next != nil {
 		return env.next.Get(ref)
 	}
@@ -193,12 +209,11 @@ func (env *TypeEnv) getRefRec(node *typeTreeNode, ref, tail Ref) types.Type {
 }
 
 func (env *TypeEnv) getRefRecExtent(node *typeTreeNode) types.Type {
-
 	if node.Leaf() {
 		return node.Value()
 	}
 
-	children := []*types.StaticProperty{}
+	children := make([]*types.StaticProperty, 0, node.Children().Len())
 
 	node.Children().Iter(func(k, v util.T) bool {
 		key := k.(Value)
@@ -388,15 +403,31 @@ func mergeTypes(a, b types.Type) types.Type {
 			return types.NewObject(nil, dynProps)
 		} else if bAny, ok := b.(types.Any); ok && len(a.StaticProperties()) == 0 {
 			// If a is an object type with no static components ...
-			for _, t := range bAny {
+			// for _, t := range bAny {
+			// 	if tObj, ok := t.(*types.Object); ok && len(tObj.StaticProperties()) == 0 {
+			// 		// ... and b is a types.Any containing an object with no static components, we merge them.
+			// 		aDynProps := a.DynamicProperties()
+			// 		tDynProps := tObj.DynamicProperties()
+			// 		tDynProps.Key = types.Or(tDynProps.Key, aDynProps.Key)
+			// 		tDynProps.Value = types.Or(tDynProps.Value, aDynProps.Value)
+			// 		return bAny
+			// 	}
+			// }
+			found := false
+			bAny.Until(func(t types.Type) bool {
 				if tObj, ok := t.(*types.Object); ok && len(tObj.StaticProperties()) == 0 {
 					// ... and b is a types.Any containing an object with no static components, we merge them.
 					aDynProps := a.DynamicProperties()
 					tDynProps := tObj.DynamicProperties()
 					tDynProps.Key = types.Or(tDynProps.Key, aDynProps.Key)
 					tDynProps.Value = types.Or(tDynProps.Value, aDynProps.Value)
-					return bAny
+					found = true
+					return true
 				}
+				return false
+			})
+			if found {
+				return bAny
 			}
 		}
 	case *types.Set:
@@ -510,7 +541,6 @@ func selectConstant(tpe types.Type, term *Term) types.Type {
 // contains vars or refs, then the returned type will be a union of the
 // possible types.
 func selectRef(tpe types.Type, ref Ref) types.Type {
-
 	if tpe == nil || len(ref) == 0 {
 		return tpe
 	}

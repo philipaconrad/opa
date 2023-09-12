@@ -95,12 +95,10 @@ func (tc *typeChecker) Env(builtins map[string]*Builtin) *TypeEnv {
 // are found. The resulting TypeEnv wraps the provided one. The resulting
 // TypeEnv will be able to resolve types of vars contained in the body.
 func (tc *typeChecker) CheckBody(env *TypeEnv, body Body) (*TypeEnv, Errors) {
-
 	errors := []*Error{}
 	env = tc.newEnv(env)
 
 	WalkExprs(body, func(expr *Expr) bool {
-
 		closureErrs := tc.checkClosures(env, expr)
 		for _, err := range closureErrs {
 			errors = append(errors, err)
@@ -174,7 +172,6 @@ func (tc *typeChecker) checkClosures(env *TypeEnv, expr *Expr) Errors {
 }
 
 func (tc *typeChecker) checkRule(env *TypeEnv, as *AnnotationSet, rule *Rule) {
-
 	env = env.wrap()
 
 	schemaAnnots := getRuleAnnotation(as, rule)
@@ -308,7 +305,6 @@ func (tc *typeChecker) checkExpr(env *TypeEnv, expr *Expr) *Error {
 }
 
 func (tc *typeChecker) checkExprBuiltin(env *TypeEnv, expr *Expr) *Error {
-
 	args := expr.Operands()
 	pre := getArgTypes(env, args)
 
@@ -368,7 +364,6 @@ func (tc *typeChecker) checkExprBuiltin(env *TypeEnv, expr *Expr) *Error {
 }
 
 func (tc *typeChecker) checkExprEq(env *TypeEnv, expr *Expr) *Error {
-
 	pre := getArgTypes(env, expr.Operands())
 	exp := Equality.Decl.FuncArgs()
 
@@ -417,7 +412,6 @@ func (tc *typeChecker) checkExprWith(env *TypeEnv, expr *Expr, i int) *Error {
 }
 
 func unify2(env *TypeEnv, a *Term, typeA types.Type, b *Term, typeB types.Type) bool {
-
 	nilA := types.Nil(typeA)
 	nilB := types.Nil(typeB)
 
@@ -499,9 +493,12 @@ func unify1(env *TypeEnv, term *Term, tpe types.Type, union bool) bool {
 				return true
 			}
 			unifies := false
-			for i := range tpe {
-				unifies = unify1(env, term, tpe[i], true) || unifies
-			}
+			tpe.Foreach(func(t types.Type) {
+				unifies = unify1(env, term, t, true) || unifies
+			})
+			// for i := range tpe {
+			// 	unifies = unify1(env, term, tpe[i], true) || unifies
+			// }
 			return unifies
 		}
 		return false
@@ -517,10 +514,14 @@ func unify1(env *TypeEnv, term *Term, tpe types.Type, union bool) bool {
 				})
 				return true
 			}
+			// unifies := false
+			// for i := range tpe {
+			// 	unifies = unify1(env, term, tpe[i], true) || unifies
+			// }
 			unifies := false
-			for i := range tpe {
-				unifies = unify1(env, term, tpe[i], true) || unifies
-			}
+			tpe.Foreach(func(t types.Type) {
+				unifies = unify1(env, term, t, true) || unifies
+			})
 			return unifies
 		}
 		return false
@@ -535,10 +536,14 @@ func unify1(env *TypeEnv, term *Term, tpe types.Type, union bool) bool {
 				})
 				return true
 			}
+			// unifies := false
+			// for i := range tpe {
+			// 	unifies = unify1(env, term, tpe[i], true) || unifies
+			// }
 			unifies := false
-			for i := range tpe {
-				unifies = unify1(env, term, tpe[i], true) || unifies
-			}
+			tpe.Foreach(func(t types.Type) {
+				unifies = unify1(env, term, t, true) || unifies
+			})
 			return unifies
 		}
 		return false
@@ -621,7 +626,6 @@ func rewriteVarsNop(node Ref) Ref {
 }
 
 func newRefChecker(env *TypeEnv, f varRewriter) *refChecker {
-
 	if f == nil {
 		f = rewriteVarsNop
 	}
@@ -670,7 +674,6 @@ func (rc *refChecker) checkApply(curr *TypeEnv, ref Ref) *Error {
 }
 
 func (rc *refChecker) checkRef(curr *TypeEnv, node *typeTreeNode, ref Ref, idx int) *Error {
-
 	if idx == len(ref) {
 		return nil
 	}
@@ -731,7 +734,6 @@ func (rc *refChecker) checkRef(curr *TypeEnv, node *typeTreeNode, ref Ref, idx i
 }
 
 func (rc *refChecker) checkRefLeaf(tpe types.Type, ref Ref, idx int) *Error {
-
 	if idx == len(ref) {
 		return nil
 	}
@@ -778,7 +780,6 @@ func (rc *refChecker) checkRefLeaf(tpe types.Type, ref Ref, idx int) *Error {
 }
 
 func unifies(a, b types.Type) bool {
-
 	if a == nil || b == nil {
 		return false
 	}
@@ -854,16 +855,23 @@ func unifiesAny(a types.Any, b types.Type) bool {
 	if _, ok := b.(*types.Function); ok {
 		return false
 	}
-	for i := range a {
-		if unifies(a[i], b) {
-			return true
-		}
+	// for i := range a {
+	// 	if unifies(a[i], b) {
+	// 		return true
+	// 	}
+	// }
+	unified := false
+	a.Until(func(t types.Type) bool {
+		unified = unifies(t, b)
+		return unified
+	})
+	if unified {
+		return true
 	}
-	return len(a) == 0
+	return a.Len() == 0
 }
 
 func unifiesArrays(a, b *types.Array) bool {
-
 	if !unifiesArraysStatic(a, b) {
 		return false
 	}
@@ -1077,10 +1085,14 @@ func getOneOfForType(tpe types.Type) (result []Value) {
 		}
 
 	case types.Any:
-		for _, object := range tpe {
-			objRes := getOneOfForType(object)
+		// for _, object := range tpe {
+		// 	objRes := getOneOfForType(object)
+		// 	result = append(result, objRes...)
+		// }
+		tpe.Foreach(func(obj types.Type) {
+			objRes := getOneOfForType(obj)
 			result = append(result, objRes...)
-		}
+		})
 	}
 
 	result = removeDuplicate(result)
@@ -1209,7 +1221,6 @@ func getObjectType(ref Ref, o types.Type, rule *Rule, d *types.DynamicProperty) 
 }
 
 func getRuleAnnotation(as *AnnotationSet, rule *Rule) (result []*SchemaAnnotation) {
-
 	for _, x := range as.GetSubpackagesScope(rule.Module.Package.Path) {
 		result = append(result, x.Schemas...)
 	}
@@ -1230,7 +1241,6 @@ func getRuleAnnotation(as *AnnotationSet, rule *Rule) (result []*SchemaAnnotatio
 }
 
 func processAnnotation(ss *SchemaSet, annot *SchemaAnnotation, rule *Rule, allowNet []string) (Ref, types.Type, *Error) {
-
 	var schema interface{}
 
 	if annot.Schema != nil {

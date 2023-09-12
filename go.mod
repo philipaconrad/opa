@@ -9,6 +9,7 @@ require (
 	github.com/bytecodealliance/wasmtime-go/v3 v3.0.2
 	github.com/containerd/containerd v1.7.4
 	github.com/dgraph-io/badger/v3 v3.2103.5
+	github.com/emirpasic/gods v1.18.1
 	github.com/fortytw2/leaktest v1.3.0
 	github.com/foxcpp/go-mockdns v1.0.0
 	github.com/fsnotify/fsnotify v1.6.0

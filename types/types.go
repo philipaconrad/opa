@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/emirpasic/gods/sets/treeset"
 	"github.com/open-policy-agent/opa/util"
 )
 
@@ -214,7 +215,7 @@ func (t *Array) String() string {
 	for _, tpe := range t.static {
 		buf = append(buf, Sprint(tpe))
 	}
-	var repr = prefix
+	repr := prefix
 	if len(buf) > 0 {
 		repr += "<" + strings.Join(buf, ", ") + ">"
 	}
@@ -355,7 +356,7 @@ func (t *Object) String() string {
 	for _, p := range t.static {
 		buf = append(buf, fmt.Sprintf("%v: %v", p.Key, Sprint(p.Value)))
 	}
-	var repr = prefix
+	repr := prefix
 	if len(buf) > 0 {
 		repr += "<" + strings.Join(buf, ", ") + ">"
 	}
@@ -412,7 +413,6 @@ func (t *Object) toMap() map[string]interface{} {
 
 // Select returns the type of the named property.
 func (t *Object) Select(name interface{}) Type {
-
 	pos := sort.Search(len(t.static), func(x int) bool {
 		return util.Compare(t.static[x].Key, name) >= 0
 	})
@@ -472,7 +472,7 @@ func mergeObjects(a, b *Object) *Object {
 		dynamicProps = b.dynamic
 	}
 
-	staticPropsMap := make(map[interface{}]Type)
+	staticPropsMap := make(map[interface{}]Type, len(a.static))
 
 	for _, sp := range a.static {
 		staticPropsMap[sp.Key] = sp.Value
@@ -502,17 +502,32 @@ func mergeObjects(a, b *Object) *Object {
 }
 
 // Any represents a dynamic type.
-type Any []Type
+// type Any []Type
+type Any struct {
+	set *treeset.Set
+}
 
 // A represents the superset of all types.
 var A = NewAny()
 
+// Warning: Will panic if a,b are not Type values.
+func godsCompareWrapper(a, b any) int {
+	tA := a.(Type)
+	tB := b.(Type)
+	return Compare(tA, tB)
+}
+
 // NewAny returns a new Any type.
 func NewAny(of ...Type) Any {
-	sl := make(Any, len(of))
-	copy(sl, of)
-	sort.Sort(typeSlice(sl))
-	return sl
+	// sl := make(Any, len(of))
+	// copy(sl, of)
+	// sort.Sort(typeSlice(sl))
+	// return sl
+	s := treeset.NewWith(godsCompareWrapper)
+	for _, item := range of {
+		s.Add(item)
+	}
+	return Any{set: s}
 }
 
 // Contains returns true if t is a superset of other.
@@ -520,16 +535,79 @@ func (t Any) Contains(other Type) bool {
 	if _, ok := other.(*Function); ok {
 		return false
 	}
-	// Note(philipc): We used to do this as a linear search.
-	// Since this is always sorted, we can use a binary search instead.
-	i := sort.Search(len(t), func(i int) bool {
-		return Compare(t[i], other) >= 0
-	})
-	if i < len(t) && Compare(t[i], other) == 0 {
-		// x is present at t[i]
+	// // Note(philipc): We used to do this as a linear search.
+	// // Since this is always sorted, we can use a binary search instead.
+	// i := sort.Search(len(t), func(i int) bool {
+	// 	return Compare(t[i], other) >= 0
+	// })
+	// if i < len(t) && Compare(t[i], other) == 0 {
+	// 	// x is present at t[i]
+	// 	return true
+	// }
+	// return len(t) == 0
+	if otherAny, ok := other.(Any); ok {
+		if otherAny.Len() == 0 {
+			return true // Empty set contained.
+		}
+	}
+	if t.set.Contains(other) {
 		return true
 	}
-	return len(t) == 0
+	return t.Len() == 0
+}
+
+func (t Any) Slice() []Type {
+	out := make([]Type, t.Len())
+	it := t.set.Iterator()
+
+	for it.Next() {
+		idx := it.Index()
+		v := it.Value().(Type)
+		out[idx] = v
+	}
+
+	return out
+}
+
+func (t Any) Len() int {
+	return t.set.Size()
+}
+
+func (t Any) Copy() Any {
+	out := NewAny()
+	it := t.set.Iterator()
+	for it.Next() {
+		v := it.Value().(Type)
+		out.set.Add(v)
+	}
+	return out
+}
+
+func (t Any) UnsafeCopy() Any {
+	return Any{set: t.set}
+}
+
+func (t Any) Foreach(f func(ty Type)) {
+	it := t.set.Iterator()
+	for it.Next() {
+		v := it.Value().(Type)
+		f(v)
+	}
+}
+
+// Until calls f on each element in t. If f returns true, iteration stops.
+func (t Any) Until(f func(ty Type) bool) bool {
+	noEarlyTerm := true
+	it := t.set.Iterator()
+	for it.Next() {
+		v := it.Value().(Type)
+		ok := f(v)
+		noEarlyTerm = ok && noEarlyTerm
+		if !ok {
+			break
+		}
+	}
+	return noEarlyTerm
 }
 
 // MarshalJSON returns the JSON encoding of t.
@@ -541,58 +619,139 @@ func (t Any) toMap() map[string]interface{} {
 	repr := map[string]interface{}{
 		"type": t.typeMarker(),
 	}
-	if len(t) != 0 {
-		repr["of"] = []Type(t)
+	if t.Len() != 0 {
+		repr["of"] = t.Slice()
 	}
+	// if len(t) != 0 {
+	// 	repr["of"] = []Type(t)
+	// }
 	return repr
 }
 
 // Merge return a new Any type that is the superset of t and other.
 func (t Any) Merge(other Type) Any {
 	if otherAny, ok := other.(Any); ok {
+		// fmt.Println("unioning this:", t.Len(), "other:", otherAny.Len())
 		return t.Union(otherAny)
 	}
 	if t.Contains(other) {
+		// fmt.Println("contained already")
 		return t
 	}
-	cpy := make(Any, len(t)+1)
-	idx := sort.Search(len(t), func(i int) bool {
-		return Compare(t[i], other) >= 0
-	})
-	copy(cpy, t[:idx])
-	cpy[idx] = other
-	copy(cpy[idx+1:], t[idx:])
-	return cpy
+	// fmt.Println("Expensive merge case. Cur len:", t.Len())
+	newSet := t.UnsafeCopy()
+	newSet.set.Add(other)
+	return newSet
+	// cpy := make(Any, len(t)+1)
+	// idx := sort.Search(len(t), func(i int) bool {
+	// 	return Compare(t[i], other) >= 0
+	// })
+	// copy(cpy, t[:idx])
+	// cpy[idx] = other
+	// copy(cpy[idx+1:], t[idx:])
+	// return cpy
+}
+
+func intMax(x, y int) int {
+	if x < y {
+		return y
+	}
+	return x
 }
 
 // Union returns a new Any type that is the union of the two Any types.
 func (t Any) Union(other Any) Any {
-	if len(t) == 0 {
+	if t.Len() == 0 {
 		return t
 	}
-	if len(other) == 0 {
+	if other.Len() == 0 {
 		return other
 	}
-	cpy := make(Any, len(t))
-	copy(cpy, t)
-	for i := range other {
-		if !cpy.Contains(other[i]) {
-			cpy = append(cpy, other[i])
-		}
-	}
-	sort.Sort(typeSlice(cpy))
-	return cpy
+	return Any{set: t.set.Union(other.set)}
+	// if len(t) == 0 {
+	// 	return t
+	// }
+	// if len(other) == 0 {
+	// 	return other
+	// }
+	// maxLen := intMax(len(t), len(other))
+	// merged := make(Any, 0, maxLen)
+	// // Create a merged slice, doing the minimum number of comparisons along the way.
+	// // We treat this as a problem of merging two sorted lists that might have duplicates.
+	// // This specifically saves us from the horrors of the pathological case, where `other`
+	// // is dramatically larger in size than `t` is.
+	// // Algorithm:
+	// //   Assume:
+	// //   - List A
+	// //   - List B
+	// // - List Output
+	// //   - Idx_a, Idx_b
+	// //   Procedure:
+	// //   - While Idx_a < len(A) and Idx_b < len(B)
+	// //     - Compare head(A) and head(B)
+	// //     - Cases:
+	// //       - A < B: Append head(A) to Output, advance Idx_a
+	// //       - A == B: Append head(A) to Output, advance Idx_a, Idx_b
+	// //       - A > B: Append head(B) to Output, advance Idx_b
+	// //   - Return output
+	// idxA := 0
+	// idxB := 0
+	// for idxA < len(t) || idxB < len(other) {
+	// 	// Early-exit cases:
+	// 	if idxA == len(t) {
+	// 		merged = append(merged, other[idxB:]...)
+	// 	} else if idxB == len(other) {
+	// 		merged = append(merged, t[idxA:]...)
+	// 	}
+	// 	// Normal selection of next element to merge:
+	// 	switch Compare(t[idxA], other[idxB]) {
+	// 	// A < B:
+	// 	case -1:
+	// 		merged = append(merged, t[idxA])
+	// 		idxA++
+	// 	// A == B:
+	// 	case 0:
+	// 		merged = append(merged, t[idxA])
+	// 		idxA++
+	// 		idxB++
+	// 	// A > B:
+	// 	case 1:
+	// 		merged = append(merged, other[idxB])
+	// 		idxB++
+	// 	}
+	// }
+	// return merged
+
+	// // cpy := make(Any, 0, len(t))
+	// // copy(cpy, t)
+	// // for i := range other {
+	// // 	if !cpy.Contains(other[i]) {
+	// // 		cpy = append(cpy, other[i])
+	// // 	}
+	// // }
+	// // sort.Sort(typeSlice(cpy))
+	// // return cpy
 }
 
 func (t Any) String() string {
 	prefix := "any"
-	if len(t) == 0 {
+	if t.Len() == 0 {
 		return prefix
 	}
-	buf := make([]string, len(t))
-	for i := range t {
-		buf[i] = Sprint(t[i])
+	// if len(t) == 0 {
+	// 	return prefix
+	// }
+	// buf := make([]string, len(t))
+	// for i := range t {
+	// buf[i] = Sprint(t[i])
+	// }
+	buf := make([]string, t.Len())
+	sl := typeSlice(t.Slice())
+	sort.Sort(sl)
+	for i := range sl {
+		buf[i] = Sprint(sl[i])
 	}
+
 	return prefix + "<" + strings.Join(buf, ", ") + ">"
 }
 
@@ -706,7 +865,6 @@ func (t *Function) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON decodes the JSON serialized function declaration.
 func (t *Function) UnmarshalJSON(bs []byte) error {
-
 	tpe, err := Unmarshal(bs)
 	if err != nil {
 		return err
@@ -862,9 +1020,44 @@ func Compare(a, b Type) int {
 		}
 		return Compare(setA.of, setB.of)
 	case Any:
-		sl1 := typeSlice(a.(Any))
-		sl2 := typeSlice(b.(Any))
-		return typeSliceCompare(sl1, sl2)
+		// sl1 := typeSlice(a.(Any))
+		// sl2 := typeSlice(b.(Any))
+		// return typeSliceCompare(sl1, sl2)
+		anyA := a.(Any)
+		anyB := b.(Any)
+
+		// Note(philipc): We're inlining the typeSliceCompare logic here in
+		// the hopes that it'll be faster for Any types than building the
+		// slices first.
+		minLen := anyA.Len()
+		if anyB.Len() < minLen {
+			minLen = anyB.Len()
+		}
+
+		itA := anyA.set.Iterator()
+		itB := anyB.set.Iterator()
+
+		for i := 0; i < minLen; i++ {
+			itA.Next()
+			itB.Next()
+			itemA := itA.Value().(Type)
+			itemB := itB.Value().(Type)
+			if cmp := Compare(itemA, itemB); cmp != 0 {
+				return cmp
+			}
+		}
+
+		// for i := 0; i < minLen; i++ {
+		// 	if cmp := Compare(a[i], b[i]); cmp != 0 {
+		// 		return cmp
+		// 	}
+		// }
+		if anyA.Len() < anyB.Len() {
+			return -1
+		} else if anyB.Len() < anyA.Len() {
+			return 1
+		}
+		return 0
 	case *Function:
 		fA := a.(*Function)
 		fB := b.(*Function)
@@ -956,9 +1149,14 @@ func Select(a Type, x interface{}) Type {
 			return A
 		}
 		var tpe Type
-		for i := range a {
-			// TODO(tsandall): test nil/nil
-			tpe = Or(Select(a[i], x), tpe)
+		// for i := range a {
+		// 	// TODO(tsandall): test nil/nil
+		// 	tpe = Or(Select(a[i], x), tpe)
+		// }
+		it := a.set.Iterator()
+		for it.Next() {
+			t := it.Value().(Type)
+			tpe = Or(Select(t, x), tpe)
 		}
 		return tpe
 	default:
@@ -990,9 +1188,15 @@ func Keys(a Type) Type {
 			return A
 		}
 		var tpe Type
-		for i := range a {
-			tpe = Or(Keys(a[i]), tpe)
+		itA := a.set.Iterator()
+		for itA.Next() {
+			item := itA.Value().(Type)
+			tpe = Or(Keys(item), tpe)
 		}
+
+		// for i := range a {
+		// 	tpe = Or(Keys(a[i]), tpe)
+		// }
 		return tpe
 	}
 	return nil
@@ -1023,9 +1227,14 @@ func Values(a Type) Type {
 			return A
 		}
 		var tpe Type
-		for i := range a {
-			tpe = Or(Values(a[i]), tpe)
+		itA := a.set.Iterator()
+		for itA.Next() {
+			item := itA.Value().(Type)
+			tpe = Or(Values(item), tpe)
 		}
+		// for i := range a {
+		// 	tpe = Or(Values(a[i]), tpe)
+		// }
 		return tpe
 	}
 	return nil

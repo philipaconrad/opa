@@ -18,7 +18,6 @@ import (
 )
 
 func TestCheckInference(t *testing.T) {
-
 	// fake_builtin_1([str1,str2])
 	RegisterBuiltin(&Builtin{
 		Name: "fake_builtin_1",
@@ -312,7 +311,6 @@ func TestCheckInference(t *testing.T) {
 }
 
 func TestCheckInferenceRules(t *testing.T) {
-
 	// Rules must have refs resolved, safe ordering, etc. Each pair is a
 	// (package path, rule) tuple. The test constructs the Rule objects to
 	// run the inference on from these inputs.
@@ -349,8 +347,10 @@ func TestCheckInferenceRules(t *testing.T) {
 	ruleset2 := [][2]string{
 		{`ref_rule_single`, `p.q.r { true }`},
 		{`ref_rule_single_with_number_key`, `p.q[3] { true }`},
-		{`ref_regression_array_key`,
-			`walker[[p, v]] = o { l = input; walk(l, k); [p, v] = k; o = {} }`},
+		{
+			`ref_regression_array_key`,
+			`walker[[p, v]] = o { l = input; walk(l, k); [p, v] = k; o = {} }`,
+		},
 		{`overlap`, `p.q[r] = y { x = ["a", "b"]; y = x[r] }`},
 		{`overlap`, `p.q.r = false { true }`},
 		{`overlap`, `p.q.r = "false" { true }`},
@@ -491,7 +491,8 @@ func TestCheckInferenceRules(t *testing.T) {
 		)},
 
 		{"ref-rules single value, full ref", ruleset2, "data.ref_rule_single.p.q.r", types.B},
-		{"ref-rules single value, prefix", ruleset2, "data.ref_rule_single.p",
+		{
+			"ref-rules single value, prefix", ruleset2, "data.ref_rule_single.p",
 			types.NewObject(
 				[]*types.StaticProperty{{
 					Key: "q", Value: types.NewObject(
@@ -500,10 +501,12 @@ func TestCheckInferenceRules(t *testing.T) {
 					),
 				}},
 				types.NewDynamicProperty(types.S, types.A),
-			)},
+			),
+		},
 
 		{"ref-rules single value, number key, full ref", ruleset2, "data.ref_rule_single_with_number_key.p.q[3]", types.B},
-		{"ref-rules single value, number key, prefix", ruleset2, "data.ref_rule_single_with_number_key.p",
+		{
+			"ref-rules single value, number key, prefix", ruleset2, "data.ref_rule_single_with_number_key.p",
 			types.NewObject(
 				[]*types.StaticProperty{{
 					Key: "q", Value: types.NewObject(
@@ -512,14 +515,17 @@ func TestCheckInferenceRules(t *testing.T) {
 					),
 				}},
 				types.NewDynamicProperty(types.S, types.A),
-			)},
+			),
+		},
 
-		{"ref_regression_array_key", ruleset2, "data.ref_regression_array_key.walker",
+		{
+			"ref_regression_array_key", ruleset2, "data.ref_regression_array_key.walker",
 			types.NewObject(
 				nil,
-				types.NewDynamicProperty(types.NewArray([]types.Type{types.NewArray(types.A, types.A), types.A}, nil),
+				types.NewDynamicProperty(types.NewArray([]types.Type{types.NewArray(types.A.Slice(), types.A), types.A}, nil),
 					types.NewObject(nil, types.NewDynamicProperty(types.A, types.A))),
-			)},
+			),
+		},
 		{
 			note:     "ref-rules single value, full ref to known leaf",
 			rules:    ruleset2,
@@ -548,7 +554,7 @@ func TestCheckInferenceRules(t *testing.T) {
 			note:     "ref-rules single value, full ref to dynamic leaf",
 			rules:    ruleset2,
 			ref:      "data.overlap.p.q[1]",
-			expected: types.Any{types.B, types.N, types.S}, // key type cannot be tied to specific dynamic value type, so we get all of them
+			expected: types.NewAny(types.B, types.N, types.S), // key type cannot be tied to specific dynamic value type, so we get all of them
 		},
 		{
 			note:  "ref-rules single value, prefix ref to partial object root",
@@ -556,7 +562,7 @@ func TestCheckInferenceRules(t *testing.T) {
 			ref:   "data.overlap.p.q",
 			expected: types.NewObject(
 				nil,
-				types.NewDynamicProperty(types.Any{types.N, types.S}, types.Any{types.B, types.N, types.S}),
+				types.NewDynamicProperty(types.NewAny(types.N, types.S), types.NewAny(types.B, types.N, types.S)),
 			),
 		},
 		{
@@ -608,12 +614,12 @@ func TestCheckInferenceRules(t *testing.T) {
 			ref:   "data.overrides.p.q",
 			expected: types.NewObject(nil, types.NewDynamicProperty(
 				types.Or(types.B, types.S),
-				types.Any{
+				types.NewAny(
 					types.S,
 					types.NewObject(nil, types.NewDynamicProperty(
-						types.Any{types.N, types.S},
-						types.Any{types.B, types.N})),
-				},
+						types.NewAny(types.N, types.S),
+						types.NewAny(types.B, types.N))),
+				),
 			),
 			),
 		},
@@ -626,7 +632,7 @@ func TestCheckInferenceRules(t *testing.T) {
 				types.NewDynamicProperty(types.S,
 					types.NewObject(
 						nil,
-						types.NewDynamicProperty(types.S, types.Any{types.B, types.N, types.S}),
+						types.NewDynamicProperty(types.S, types.NewAny(types.B, types.N, types.S)),
 					),
 				),
 			),
@@ -636,26 +642,26 @@ func TestCheckInferenceRules(t *testing.T) {
 			rules: ruleset3,
 			ref:   "data.overrides_static.p.q.foo",
 			expected: types.NewObject(nil,
-				types.NewDynamicProperty(types.S, types.Any{types.B, types.N, types.S}),
+				types.NewDynamicProperty(types.S, types.NewAny(types.B, types.N, types.S)),
 			),
 		},
 		{
 			note:     "general ref-rules, multiple static key overrides, leaf access (a)",
 			rules:    ruleset3,
 			ref:      "data.overrides_static.p.q.foo.a",
-			expected: types.Any{types.B, types.N, types.S}, // Dynamically build object types don't have static properties, so even though we "know" the 'a' key has a string value, we've lost this information.
+			expected: types.NewAny(types.B, types.N, types.S), // Dynamically build object types don't have static properties, so even though we "know" the 'a' key has a string value, we've lost this information.
 		},
 		{
 			note:     "general ref-rules, multiple static key overrides, leaf access (b)",
 			rules:    ruleset3,
 			ref:      "data.overrides_static.p.q.bar.b",
-			expected: types.Any{types.B, types.N, types.S},
+			expected: types.NewAny(types.B, types.N, types.S),
 		},
 		{
 			note:     "general ref-rules, multiple static key overrides, leaf access (c)",
 			rules:    ruleset3,
 			ref:      "data.overrides_static.p.q.baz.c",
-			expected: types.Any{types.B, types.N, types.S},
+			expected: types.NewAny(types.B, types.N, types.S),
 		},
 	}
 
@@ -682,7 +688,6 @@ func TestCheckInferenceRules(t *testing.T) {
 			ref := MustParseRef(tc.ref)
 			checker := newTypeChecker()
 			env, err := checker.CheckTypes(newTypeChecker().Env(map[string]*Builtin{"walk": BuiltinMap["walk"]}), elems, nil)
-
 			if err != nil {
 				t.Fatalf("Unexpected error %v:", err)
 			}
@@ -701,7 +706,6 @@ func TestCheckInferenceRules(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestCheckInferenceOverlapWithRules(t *testing.T) {
@@ -786,7 +790,6 @@ func TestCheckInferenceOverlapWithRules(t *testing.T) {
 }
 
 func TestCheckErrorSuppression(t *testing.T) {
-
 	query := `arr = [1,2,3]; arr[0].deadbeef = 1`
 
 	_, errs := newTypeChecker().CheckBody(nil, MustParseBody(query))
@@ -810,7 +813,6 @@ func TestCheckErrorSuppression(t *testing.T) {
 	if !ok {
 		t.Fatalf("Expected arg error but got: %v", errs)
 	}
-
 }
 
 func TestCheckBadCardinality(t *testing.T) {
@@ -882,7 +884,6 @@ func TestCheckMatchErrors(t *testing.T) {
 }
 
 func TestCheckBuiltinErrors(t *testing.T) {
-
 	RegisterBuiltin(&Builtin{
 		Name: "fake_builtin_2",
 		Decl: types.NewFunction(
@@ -936,7 +937,6 @@ func TestCheckBuiltinErrors(t *testing.T) {
 }
 
 func TestVoidBuiltins(t *testing.T) {
-
 	// Void builtins are used in test cases.
 	RegisterBuiltin(&Builtin{
 		Name: "fake_void_builtin",
@@ -969,7 +969,6 @@ func TestVoidBuiltins(t *testing.T) {
 }
 
 func TestVariadicBuiltins(t *testing.T) {
-
 	// Ensure type checking allows variadic arguments.
 	env := newTypeChecker().Env(map[string]*Builtin{
 		"println": {
@@ -1020,11 +1019,9 @@ func TestVariadicBuiltins(t *testing.T) {
 	if len(detail.Have) != 2 || len(detail.Want.Args) != 1 || types.Compare(detail.Want.Args[0], types.N) != 0 || types.Compare(detail.Want.Variadic, types.N) != 0 {
 		t.Fatal("unexpected detail:", detail)
 	}
-
 }
 
 func TestCheckRefErrUnsupported(t *testing.T) {
-
 	query := `arr = [[1,2],[3,4]]; arr[1][0].deadbeef`
 
 	_, errs := newTypeChecker().CheckBody(nil, MustParseBody(query))
@@ -1046,11 +1043,9 @@ func TestCheckRefErrUnsupported(t *testing.T) {
 		types.Compare(wantHave, details.Have) != 0 {
 		t.Fatalf("Expected (%v, %v, %v) but got: (%v, %v, %v)", wantRef, wantPos, wantHave, details.Ref, details.Pos, details.Have)
 	}
-
 }
 
 func TestCheckRefErrInvalid(t *testing.T) {
-
 	env := newTestEnv([]string{
 		`p { true }`,
 		`q = {"foo": 1, "bar": 2} { true }`,
@@ -1099,7 +1094,7 @@ func TestCheckRefErrInvalid(t *testing.T) {
 			ref:   `data.test.a.b.c[x][_]`,
 			pos:   5,
 			have:  types.B,
-			want:  types.Any{types.N, types.S},
+			want:  types.NewAny(types.N, types.S),
 			oneOf: []Value{Number("3")},
 		},
 		{
@@ -1199,7 +1194,6 @@ func TestCheckRefErrInvalid(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.note, func(t *testing.T) {
-
 			_, errs := newTypeChecker().CheckBody(env, MustParseBody(tc.query))
 			if len(errs) != 1 {
 				t.Fatalf("Expected exactly one error but got: %v", errs)
@@ -1316,7 +1310,6 @@ func TestFunctionsTypeInference(t *testing.T) {
 }
 
 func TestFunctionTypeInferenceUnappliedWithObjectVarKey(t *testing.T) {
-
 	// Run type inference on a function that constructs an object with a key
 	// from args in the head.
 	module := MustParseModule(`
@@ -1345,7 +1338,6 @@ func TestFunctionTypeInferenceUnappliedWithObjectVarKey(t *testing.T) {
 }
 
 func TestCheckValidErrors(t *testing.T) {
-
 	module := MustParseModule(`
 		package test
 
@@ -1427,7 +1419,6 @@ func TestCheckValidErrors(t *testing.T) {
 }
 
 func TestCheckErrorDetails(t *testing.T) {
-
 	tests := []struct {
 		detail   ErrorDetails
 		expected []string
@@ -1503,7 +1494,6 @@ func TestCheckErrorDetails(t *testing.T) {
 }
 
 func TestCheckErrorOrdering(t *testing.T) {
-
 	mod := MustParseModule(`
 		package test
 
@@ -1534,7 +1524,6 @@ func TestCheckErrorOrdering(t *testing.T) {
 }
 
 func TestRewrittenVarsInErrors(t *testing.T) {
-
 	_, errs := newTypeChecker().WithVarRewriter(rewriteVarsInRef(map[Var]Var{
 		"__local0__": "foo",
 		"__local1__": "bar",
@@ -1552,7 +1541,6 @@ func TestRewrittenVarsInErrors(t *testing.T) {
 	if !detail.Ref.Equal(MustParseRef("foo[0][bar]")) {
 		t.Fatal("expected ref to be foo[0][bar] but got:", detail.Ref)
 	}
-
 }
 
 func newTestEnv(rs []string) *TypeEnv {
@@ -1734,7 +1722,6 @@ const dataSchema = `{
 }`
 
 func TestCheckAnnotationRules(t *testing.T) {
-
 	ischema := util.MustUnmarshalJSON([]byte(inputSchema))
 	ischema2 := util.MustUnmarshalJSON([]byte(inputSchema2))
 	dschema := util.MustUnmarshalJSON([]byte(dataSchema))
@@ -2342,13 +2329,11 @@ p { input = "foo" }`}},
 			if oldTypeEnv.tree.children != nil && typeenv.next.tree.children != nil && (typeenv.next.tree.children.Len() != oldTypeEnv.tree.children.Len()) {
 				t.Fatalf("Unexpected type env")
 			}
-
 		})
 	}
 }
 
 func TestCheckAnnotationInference(t *testing.T) {
-
 	tests := []struct {
 		note    string
 		modules map[string]string
@@ -2381,7 +2366,6 @@ q = p`,
 
 	for _, tc := range tests {
 		t.Run(tc.note, func(t *testing.T) {
-
 			modules := map[string]*Module{}
 			for k, v := range tc.modules {
 				var err error
@@ -2419,10 +2403,8 @@ q = p`,
 					}
 				}
 			}
-
 		})
 	}
-
 }
 
 func TestRemoteSchema(t *testing.T) {
