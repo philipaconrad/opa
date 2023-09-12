@@ -583,6 +583,12 @@ func (t Any) Copy() Any {
 	return out
 }
 
+func (t Any) Clone() Any {
+	out := NewAny()
+	out.set.Add(t.set.Values()...)
+	return out
+}
+
 func (t Any) UnsafeCopy() Any {
 	return Any{set: t.set}
 }
@@ -639,7 +645,7 @@ func (t Any) Merge(other Type) Any {
 		return t
 	}
 	// fmt.Println("Expensive merge case. Cur len:", t.Len())
-	newSet := t.UnsafeCopy()
+	newSet := t.Clone()
 	newSet.set.Add(other)
 	return newSet
 	// cpy := make(Any, len(t)+1)
