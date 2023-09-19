@@ -508,6 +508,11 @@ var A = NewAny()
 
 // NewAny returns a new Any type.
 func NewAny(of ...Type) Any {
+	// Note(philipc): johanfylling suggested generalizing the Any type
+	// after 100 members, as an optimization.
+	if len(of) >= 100 {
+		return Any{}
+	}
 	sl := make(Any, len(of))
 	copy(sl, of)
 	sort.Sort(typeSlice(sl))
@@ -553,6 +558,11 @@ func (t Any) Merge(other Type) Any {
 	}
 	if t.Contains(other) {
 		return t
+	}
+	// Note(philipc): johanfylling suggested generalizing the Any type
+	// after 100 members, as an optimization.
+	if len(t)+1 >= 100 {
+		return NewAny()
 	}
 	cpy := make(Any, len(t)+1)
 	idx := sort.Search(len(t), func(i int) bool {
@@ -604,12 +614,27 @@ func (t Any) Union(other Any) Any {
 	idxA := 0
 	idxB := 0
 	for idxA < lenT || idxB < lenOther {
+		// Note(philipc): johanfylling suggested generalizing the Any type
+		// after 100 members, as an optimization.
+		if len(merged) >= 100 {
+			return NewAny()
+		}
 		// Early-exit cases:
 		if idxA == lenT {
+			// Note(philipc): johanfylling suggested generalizing the Any type
+			// after 100 members, as an optimization.
+			if len(merged)+len(other[idxB:]) >= 100 {
+				return NewAny()
+			}
 			// Ran out of elements in t. Copy over what's left from other.
 			merged = append(merged, other[idxB:]...)
 			break
 		} else if idxB == lenOther {
+			// Note(philipc): johanfylling suggested generalizing the Any type
+			// after 100 members, as an optimization.
+			if len(merged)+len(t[idxA:]) >= 100 {
+				return NewAny()
+			}
 			// Ran out of elements in other. Copy over what's left from t.
 			merged = append(merged, t[idxA:]...)
 			break
