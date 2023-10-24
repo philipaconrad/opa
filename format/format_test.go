@@ -77,6 +77,26 @@ func TestFormatSourceError(t *testing.T) {
 	}
 }
 
+func TestFormatConflictingCommentsError(t *testing.T) {
+	rego := "testfiles/test_issue_6330.rego.error"
+	contents, err := os.ReadFile(rego)
+	if err != nil {
+		t.Fatalf("Failed to read rego source: %v", err)
+	}
+
+	_, err = Source(rego, contents)
+	if err == nil {
+		t.Fatal("Expected parsing error, not nil")
+	}
+
+	// Has the filename prefix because it's an issue during formatting, not parsing.
+	exp := "testfiles/test_issue_6330.rego.error: 1 error occurred: testfiles/test_issue_6330.rego.error:4: rego_parse_error: could not move comment from line 3, because an existing comment was already present at line 4"
+
+	if !strings.HasPrefix(err.Error(), exp) {
+		t.Fatalf("Expected error message '%s', got '%s'", exp, err.Error())
+	}
+}
+
 func TestFormatSource(t *testing.T) {
 	regoFiles, err := filepath.Glob("testfiles/*.rego")
 	if err != nil {

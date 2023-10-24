@@ -523,7 +523,9 @@ func (w *writer) insertComments(comments []*ast.Comment, loc *ast.Location) []*a
 		w.blankLine()
 	}
 
-	w.beforeLineEnd(at)
+	if err := w.beforeLineEnd(at); err != nil {
+		w.errs = append(w.errs, err.(*ast.Error))
+	}
 	return comments
 }
 
@@ -1332,14 +1334,15 @@ func (w *writer) endLine() {
 }
 
 // beforeLineEnd registers a comment to be printed at the end of the current line.
-func (w *writer) beforeLineEnd(c *ast.Comment) {
+func (w *writer) beforeLineEnd(c *ast.Comment) error {
 	if w.beforeEnd != nil {
 		if c == nil {
-			return
+			return nil
 		}
-		panic("overwriting non-nil beforeEnd")
+		return ast.NewError(ast.ParseErr, c.Location, "could not move comment from line %d, because an existing comment was already present at line %d", w.beforeEnd.Location.Row, c.Location.Row)
 	}
 	w.beforeEnd = c
+	return nil
 }
 
 func (w *writer) delayBeforeEnd() {
