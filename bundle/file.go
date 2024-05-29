@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -370,7 +371,11 @@ func (t *tarballLoader) NextFile() (*Descriptor, error) {
 
 				f := file{name: header.Name}
 
+				// Note(philipc): We rely on the previous size check in this loop for safety.
 				var buf bytes.Buffer
+				if header.Size < math.MaxInt {
+					buf.Grow(int(header.Size))
+				}
 				if _, err := io.Copy(&buf, t.tr); err != nil {
 					return nil, fmt.Errorf("failed to copy file %s: %w", header.Name, err)
 				}
