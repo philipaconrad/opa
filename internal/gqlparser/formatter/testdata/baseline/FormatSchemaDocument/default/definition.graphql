@@ -1,3 +1,6 @@
+"""
+Cat0 description
+"""
 scalar Cat0
 type Cat1 {
 	name: String

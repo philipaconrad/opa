@@ -52,15 +52,14 @@ func Test(t *testing.T, filename string, f func(t *testing.T, input string) Spec
 			for _, spec := range specs {
 				t.Run(spec.Name, func(t *testing.T) {
 					result := f(t, spec.Input)
-
-					if spec.Error == nil {
+					switch {
+					case spec.Error == nil:
 						if result.Error != nil {
-							gqlErr := err.(*gqlerror.Error)
-							t.Errorf("unexpected error %s", gqlErr.Message)
+							t.Errorf("unexpected error %s", result.Error.Message)
 						}
-					} else if result.Error == nil {
+					case result.Error == nil:
 						t.Errorf("expected error but got none")
-					} else {
+					default:
 						if result.Error.Message != spec.Error.Message {
 							t.Errorf("wrong error returned\nexpected: %s\ngot:      %s", spec.Error.Message, result.Error.Message)
 						}
@@ -86,7 +85,7 @@ func Test(t *testing.T, filename string, f func(t *testing.T, input string) Spec
 						for i, tok := range result.Tokens {
 							expected := spec.Tokens[i]
 
-							if !strings.EqualFold(strings.Replace(expected.Kind, "_", "", -1), tok.Kind) {
+							if !strings.EqualFold(strings.ReplaceAll(expected.Kind, "_", ""), tok.Kind) {
 								t.Errorf("token[%d].kind should be %s, was %s", i, expected.Kind, tok.Kind)
 							}
 							if expected.Value != "undefined" && expected.Value != tok.Value {
@@ -114,9 +113,9 @@ func Test(t *testing.T, filename string, f func(t *testing.T, input string) Spec
 					result.AST = strings.TrimSpace(result.AST)
 
 					if spec.AST != "" && spec.AST != result.AST {
-						diff := diff.LineDiff(spec.AST, result.AST)
-						if diff != "" {
-							t.Errorf("AST mismatch:\n%s", diff)
+						diffStr := diff.LineDiff(spec.AST, result.AST)
+						if diffStr != "" {
+							t.Errorf("AST mismatch:\n%s", diffStr)
 						}
 					}
 
@@ -135,5 +134,4 @@ func Test(t *testing.T, filename string, f func(t *testing.T, input string) Spec
 			}
 		})
 	}
-
 }

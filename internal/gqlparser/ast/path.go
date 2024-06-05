@@ -14,10 +14,15 @@ type PathElement interface {
 	isPathElement()
 }
 
-var _ PathElement = PathIndex(0)
-var _ PathElement = PathName("")
+var (
+	_ PathElement = PathIndex(0)
+	_ PathElement = PathName("")
+)
 
 func (path Path) String() string {
+	if path == nil {
+		return ""
+	}
 	var str bytes.Buffer
 	for i, v := range path {
 		switch v := v.(type) {
