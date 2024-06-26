@@ -7,7 +7,7 @@ package authorizer
 
 import (
 	"context"
-	"io"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -90,40 +90,21 @@ func NewBasic(inner http.Handler, compiler func() *ast.Compiler, store storage.S
 }
 
 func (h *Basic) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-
-	// TODO(tsandall): Pass AST value as input instead of Go value to avoid unnecessary
-	// conversions.
-	r, input, err := makeInput(r)
+	updatedR, rs, err := h.evalAuthzPolicy(r)
 	if err != nil {
 		writer.ErrorString(w, http.StatusBadRequest, types.CodeInvalidParameter, err)
 		return
 	}
-
-	rego := rego.New(
-		rego.Query(h.decision().String()),
-		rego.Compiler(h.compiler()),
-		rego.Store(h.store),
-		rego.Input(input),
-		rego.Runtime(h.runtime),
-		rego.EnablePrintStatements(h.enablePrintStatements),
-		rego.PrintHook(h.printHook),
-		rego.InterQueryBuiltinCache(h.interQueryCache),
-	)
-
-	rs, err := rego.Eval(r.Context())
-
-	if err != nil {
-		writer.ErrorAuto(w, err)
-		return
-	}
+	r = updatedR
 
 	if len(rs) == 0 {
 		// Authorizer was configured but no policy defined. This indicates an internal error or misconfiguration.
 		writer.Error(w, http.StatusInternalServerError, types.NewErrorV1(types.CodeInternal, types.MsgUnauthorizedUndefinedError))
 		return
 	}
+	authzEvalResult := rs[0].Expressions[0].Value
 
-	switch allowed := rs[0].Expressions[0].Value.(type) {
+	switch allowed := authzEvalResult.(type) {
 	case bool:
 		if allowed {
 			h.inner.ServeHTTP(w, r)
@@ -150,6 +131,34 @@ func (h *Basic) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writer.Error(w, http.StatusUnauthorized, types.NewErrorV1(types.CodeUnauthorized, types.MsgUnauthorizedError))
 }
 
+func (h *Basic) evalAuthzPolicy(r *http.Request) (*http.Request, rego.ResultSet, error) {
+	// TODO(tsandall): Pass AST value as input instead of Go value to avoid unnecessary
+	// conversions.
+	updatedR, input, err := makeInput(r)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rego := rego.New(
+		rego.Query(h.decision().String()),
+		rego.Compiler(h.compiler()),
+		rego.Store(h.store),
+		rego.Input(input),
+		rego.Runtime(h.runtime),
+		rego.EnablePrintStatements(h.enablePrintStatements),
+		rego.PrintHook(h.printHook),
+		rego.InterQueryBuiltinCache(h.interQueryCache),
+	)
+
+	rs, err := rego.Eval(r.Context())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Update stuff outside this context.
+	return updatedR, rs, nil
+}
+
 func makeInput(r *http.Request) (*http.Request, interface{}, error) {
 	path, err := parsePath(r.URL.Path)
 	if err != nil {
@@ -163,14 +172,15 @@ func makeInput(r *http.Request) (*http.Request, interface{}, error) {
 
 	if expectBody(r.Method, path) {
 		var err error
-		plaintextBody, err := util.ReadMaybeCompressedBody(r)
+		fmt.Println("makeInput")
+		rawBody, err = util.ReadMaybeCompressedBodyBytes(r)
 		if err != nil {
 			return r, nil, err
 		}
-		rawBody, err = io.ReadAll(plaintextBody)
-		if err != nil {
-			return r, nil, err
-		}
+		// rawBody, err = io.ReadAll(plaintextBody)
+		// if err != nil {
+		// 	return r, nil, err
+		// }
 	}
 
 	input := map[string]interface{}{

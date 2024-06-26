@@ -26,7 +26,6 @@ func (c *cache) Get(k string) (interface{}, bool) {
 }
 
 func (c *cache) Insert(k string, v interface{}) {
-
 	// Short path if its already in the cache
 	_, ok := c.Get(k)
 	if ok {

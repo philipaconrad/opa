@@ -80,7 +80,6 @@ func TestUnversionedGetHealthBundleNoBundleSet(t *testing.T) {
 }
 
 func TestUnversionedGetHealthCheckOnlyBundlePlugin(t *testing.T) {
-
 	f := newFixture(t)
 
 	// Initialize the server as if a bundle plugin was
@@ -100,7 +99,6 @@ func TestUnversionedGetHealthCheckOnlyBundlePlugin(t *testing.T) {
 }
 
 func TestUnversionedGetHealthCheckDiscoveryWithBundle(t *testing.T) {
-
 	f := newFixture(t)
 
 	// Initialize the server as if a discovery bundle is configured
@@ -127,7 +125,6 @@ func TestUnversionedGetHealthCheckDiscoveryWithBundle(t *testing.T) {
 }
 
 func TestUnversionedGetHealthCheckBundleActivationSingleLegacy(t *testing.T) {
-
 	// Initialize the server as if there is no bundle plugin
 
 	f := newFixture(t)
@@ -143,7 +140,6 @@ func TestUnversionedGetHealthCheckBundleActivationSingleLegacy(t *testing.T) {
 			Revision: "a",
 		})
 	})
-
 	if err != nil {
 		t.Fatalf("Unexpected error: %s", err)
 	}
@@ -154,7 +150,6 @@ func TestUnversionedGetHealthCheckBundleActivationSingleLegacy(t *testing.T) {
 }
 
 func TestBundlesReady(t *testing.T) {
-
 	cases := []struct {
 		note   string
 		status map[string]*plugins.Status
@@ -245,7 +240,6 @@ func TestBundlesReady(t *testing.T) {
 }
 
 func TestUnversionedGetHealthCheckDiscoveryWithPlugins(t *testing.T) {
-
 	// Use the same server through the cases, the status updates apply incrementally to it.
 	f := newFixture(t)
 
@@ -385,7 +379,6 @@ func TestUnversionedGetHealthCheckDiscoveryWithPlugins(t *testing.T) {
 }
 
 func TestUnversionedGetHealthCheckDiscoveryWithPluginsAndExclude(t *testing.T) {
-
 	// Use the same server through the cases, the status updates apply incrementally to it.
 	f := newFixture(t)
 
@@ -497,7 +490,6 @@ func TestUnversionedGetHealthCheckDiscoveryWithPluginsAndExclude(t *testing.T) {
 }
 
 func TestUnversionedGetHealthCheckBundleAndPlugins(t *testing.T) {
-
 	cases := []struct {
 		note     string
 		statuses map[string]*plugins.Status
@@ -849,7 +841,6 @@ func Test405StatusCodev0(t *testing.T) {
 }
 
 func TestCompileV1(t *testing.T) {
-
 	mod := `package test
 
 	p {
@@ -1620,7 +1611,6 @@ func TestConfigV1(t *testing.T) {
 }
 
 func TestDataYAML(t *testing.T) {
-
 	testMod1 := `package testmod
 import input.req1
 gt1 = true { req1 > 1 }`
@@ -1667,7 +1657,6 @@ main = data.testmod.gt1`, 200, ""); err != nil {
 	if err := f.executeRequest(req, 200, `true`); err != nil {
 		t.Fatalf("Unexpected error from POST with yaml: %v", err)
 	}
-
 }
 
 func TestDataPutV1IfNoneMatch(t *testing.T) {
@@ -2143,7 +2132,6 @@ func TestCompileV1CompressedRequest(t *testing.T) {
 }
 
 func TestBundleScope(t *testing.T) {
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	test.WithTempFS(nil, func(root string) {
@@ -2268,7 +2256,6 @@ func TestBundleScope(t *testing.T) {
 }
 
 func TestBundleScopeMultiBundle(t *testing.T) {
-
 	ctx := context.Background()
 
 	f := newFixture(t)
@@ -2483,7 +2470,8 @@ func TestDataGetExplainFull(t *testing.T) {
 		`query:1     | Eval data.x = _`,
 		`query:1     | Exit data.x = _`,
 		`query:1     Redo data.x = _`,
-		`query:1     | Redo data.x = _`}
+		`query:1     | Redo data.x = _`,
+	}
 	actual := util.MustUnmarshalJSON(result.Explanation).([]interface{})
 	if !reflect.DeepEqual(actual, exp) {
 		t.Fatalf(`Expected pretty explanation to be %v, got %v`, exp, actual)
@@ -2491,7 +2479,6 @@ func TestDataGetExplainFull(t *testing.T) {
 }
 
 func TestDataPostWithActiveStoreWriteTxn(t *testing.T) {
-
 	f := newFixture(t)
 
 	err := f.v1(http.MethodPut, "/policies/test", `package test
@@ -2563,7 +2550,6 @@ p = [1, 2, 3, 4] { true }`, 200, "")
 	if result.Result == nil || !reflect.DeepEqual(*result.Result, expected) {
 		t.Fatalf("Expected %v but got: %v", expected, result.Result)
 	}
-
 }
 
 func TestDataPostExplainNotes(t *testing.T) {
@@ -2610,7 +2596,6 @@ func TestDataPostExplainNotes(t *testing.T) {
 }
 
 func TestDataProvenanceSingleBundle(t *testing.T) {
-
 	f := newFixture(t)
 
 	// Dummy up since we are not using ld...
@@ -2680,7 +2665,6 @@ func TestDataProvenanceSingleBundle(t *testing.T) {
 }
 
 func TestDataProvenanceSingleFileBundle(t *testing.T) {
-
 	f := newFixture(t)
 
 	// Dummy up since we are not using ld...
@@ -2728,7 +2712,6 @@ func TestDataProvenanceSingleFileBundle(t *testing.T) {
 }
 
 func TestDataProvenanceMultiBundle(t *testing.T) {
-
 	f := newFixture(t)
 
 	// Dummy up since we are not using ld...
@@ -2915,7 +2898,6 @@ func assertMetricsExist(t *testing.T, metrics types.MetricsV1, expected []string
 }
 
 func TestV1Pretty(t *testing.T) {
-
 	f := newFixture(t)
 	err := f.v1(http.MethodPatch, "/data/x", `[{"op": "add", "path":"/", "value": [1,2,3,4]}]`, 204, "")
 	if err != nil {
@@ -3023,7 +3005,6 @@ func TestPoliciesPutV1ParseError(t *testing.T) {
 	if f.recorder.Code != 200 {
 		t.Fatalf("Expected ok but got %v", f.recorder)
 	}
-
 }
 
 func TestPoliciesPutV1CompileError(t *testing.T) {
@@ -3111,7 +3092,6 @@ func TestPoliciesPutV1Noop(t *testing.T) {
 	if _, ok := resp2.Metrics["timer_rego_module_parse_ns"]; !ok {
 		t.Fatalf("Expected parse module metric in response but got %v", resp2)
 	}
-
 }
 
 func TestPoliciesListV1(t *testing.T) {
@@ -3242,7 +3222,7 @@ func TestPoliciesPathSlashes(t *testing.T) {
 
 func TestPoliciesUrlEncoded(t *testing.T) {
 	const expectedPolicyID = "/a policy/another-component"
-	var urlEscapedPolicyID = url.PathEscape(expectedPolicyID)
+	urlEscapedPolicyID := url.PathEscape(expectedPolicyID)
 	f := newFixture(t)
 
 	// PUT policy with URL encoded ID
@@ -3283,7 +3263,6 @@ func TestPoliciesUrlEncoded(t *testing.T) {
 }
 
 func TestStatusV1(t *testing.T) {
-
 	f := newFixture(t)
 
 	// Expect HTTP 500 before status plugin is registered
@@ -3373,7 +3352,6 @@ func TestStatusV1(t *testing.T) {
 }
 
 func TestStatusV1MetricsWithSystemAuthzPolicy(t *testing.T) {
-
 	ctx := context.Background()
 
 	// Add the authz policy
@@ -3517,9 +3495,11 @@ func TestStatusV1MetricsWithSystemAuthzPolicy(t *testing.T) {
 		t.Fatal("expected http_request_duration_seconds histogram metric to be a list")
 	}
 
-	expected := []interface{}{map[string]interface{}{"name": "code", "value": "401"},
+	expected := []interface{}{
+		map[string]interface{}{"name": "code", "value": "401"},
 		map[string]interface{}{"name": "handler", "value": "authz"},
-		map[string]interface{}{"name": "method", "value": "get"}}
+		map[string]interface{}{"name": "method", "value": "get"},
+	}
 
 	found := false
 	for _, m := range innerMet {
@@ -3564,7 +3544,6 @@ func TestQueryPostBasic(t *testing.T) {
 }
 
 func TestDecisionIDs(t *testing.T) {
-
 	f := newFixture(t)
 
 	ids := []string{}
@@ -3843,11 +3822,9 @@ func TestDecisionLogging(t *testing.T) {
 			}
 		}
 	}
-
 }
 
 func TestDecisionLogErrorMessage(t *testing.T) {
-
 	f := newFixture(t)
 
 	f.server.WithDecisionLoggerWithErr(func(context.Context, *Info) error {
@@ -3965,7 +3942,6 @@ func TestQueryV1UnsafeBuiltin(t *testing.T) {
 }
 
 func TestUnversionedPost(t *testing.T) {
-
 	f := newFixture(t)
 
 	post := func() *http.Request {
@@ -4106,7 +4082,6 @@ func TestQueryV1Explain(t *testing.T) {
 }
 
 func TestAuthorization(t *testing.T) {
-
 	ctx := context.Background()
 	store := inmem.New()
 	m, err := plugins.New([]byte{}, "test", store)
@@ -4145,7 +4120,6 @@ func TestAuthorization(t *testing.T) {
 		WithManager(m).
 		WithAuthorization(AuthorizationBasic).
 		Init(ctx)
-
 	if err != nil {
 		panic(err)
 	}
@@ -4225,7 +4199,6 @@ func TestAuthorization(t *testing.T) {
 }
 
 func TestAuthorizationUsesInterQueryCache(t *testing.T) {
-
 	ctx := context.Background()
 	store := inmem.New()
 	m, err := plugins.New([]byte{}, "test", store)
@@ -4276,7 +4249,6 @@ allow {
 		WithManager(m).
 		WithAuthorization(AuthorizationBasic).
 		Init(ctx)
-
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4312,7 +4284,6 @@ func validateAuthorizedRequest(t *testing.T, s *Server, req *http.Request, exp i
 }
 
 func TestServerUsesAuthorizerParsedBody(t *testing.T) {
-
 	// Construct a request w/ a different message body (this should never happen.)
 	req, err := http.NewRequest(http.MethodPost, "http://localhost:8182/v1/data/test/echo", bytes.NewBufferString(`{"foo": "bad"}`))
 	if err != nil {
@@ -4444,7 +4415,6 @@ func (queryBindingErrStore) Commit(_ context.Context, _ storage.Transaction) err
 }
 
 func (queryBindingErrStore) Abort(_ context.Context, _ storage.Transaction) {
-
 }
 
 func (queryBindingErrStore) Truncate(context.Context, storage.Transaction, storage.TransactionParams, storage.Iterator) error {
@@ -4456,11 +4426,9 @@ func (queryBindingErrStore) Register(context.Context, storage.Transaction, stora
 }
 
 func (queryBindingErrStore) Unregister(context.Context, storage.Transaction, string) {
-
 }
 
 func TestQueryBindingIterationError(t *testing.T) {
-
 	ctx := context.Background()
 	mock := &queryBindingErrStore{}
 	m, err := plugins.New([]byte{}, "test", mock)
@@ -5064,7 +5032,6 @@ func TestDiagnosticRoutes(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestDistributedTracingEnabled(t *testing.T) {
@@ -5080,7 +5047,6 @@ func TestDistributedTracingEnabled(t *testing.T) {
 }
 
 func TestCertPoolReloading(t *testing.T) {
-
 	ctx := context.Background()
 
 	tempDir := t.TempDir()
@@ -5487,11 +5453,9 @@ func TestCertPoolReloading(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error shutting down server: %s", err)
 	}
-
 }
 
 func TestCertReloading(t *testing.T) {
-
 	ctx := context.Background()
 
 	testCases := map[string]struct {
@@ -5546,7 +5510,6 @@ func TestCertReloading(t *testing.T) {
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-
 			tempDir := t.TempDir()
 
 			serverCert1Path := filepath.Join(tempDir, "serverCert1.pem")
@@ -5907,7 +5870,6 @@ func TestCertReloading(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 type mockHTTPHandler struct{}

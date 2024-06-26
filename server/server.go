@@ -636,7 +636,6 @@ func (s *Server) getListenerForHTTPServer(u *url.URL, h http.Handler, t httpList
 }
 
 func (s *Server) getListenerForHTTPSServer(u *url.URL, h http.Handler, t httpListenerType) (Loop, httpListener, error) {
-
 	if s.cert == nil {
 		return nil, nil, fmt.Errorf("TLS certificate required but not supplied")
 	}
@@ -968,7 +967,6 @@ type bundleRevisions struct {
 }
 
 func getRevisions(ctx context.Context, store storage.Store, txn storage.Transaction) (bundleRevisions, error) {
-
 	var err error
 	var br bundleRevisions
 	br.Revisions = map[string]string{}
@@ -997,7 +995,6 @@ func getRevisions(ctx context.Context, store storage.Store, txn storage.Transact
 }
 
 func (s *Server) reload(context.Context, storage.Transaction, storage.TriggerEvent) {
-
 	// NOTE(tsandall): We currently rely on the storage txn to provide
 	// critical sections in the server.
 	//
@@ -1117,7 +1114,7 @@ func (s *Server) v0QueryPath(w http.ResponseWriter, r *http.Request, urlPath str
 	if len(rs) == 0 {
 		ref := stringPathToDataRef(urlPath)
 
-		var messageType = types.MsgMissingError
+		messageType := types.MsgMissingError
 		if len(s.getCompiler().GetRulesForVirtualDocument(ref)) > 0 {
 			messageType = types.MsgFoundUndefinedError
 		}
@@ -1181,7 +1178,6 @@ func (s *Server) canEval(ctx context.Context) bool {
 }
 
 func (s *Server) bundlesReady(pluginStatuses map[string]*plugins.Status) bool {
-
 	// Look for a discovery plugin first, if it exists and isn't ready
 	// then don't bother with the others.
 	// Note: use "discovery" instead of `discovery.Name` to avoid import
@@ -1335,14 +1331,15 @@ func (s *Server) v1CompilePost(w http.ResponseWriter, r *http.Request) {
 	m.Timer(metrics.ServerHandler).Start()
 	m.Timer(metrics.RegoQueryParse).Start()
 
-	// decompress the input if sent as zip
-	body, err := util.ReadMaybeCompressedBody(r)
-	if err != nil {
-		writer.Error(w, http.StatusBadRequest, types.NewErrorV1(types.CodeInvalidParameter, "could not decompress the body"))
-		return
-	}
+	// decompress the input if sent as zip, but only if the authorizer didn't decompress it first.
+	fmt.Println("v1CompilePost")
+	// body, err := util.ReadMaybeCompressedBody(r)
+	// if err != nil {
+	// 	writer.Error(w, http.StatusBadRequest, types.NewErrorV1(types.CodeInvalidParameter, "could not decompress the body"))
+	// 	return
+	// }
 
-	request, reqErr := readInputCompilePostV1(body)
+	request, reqErr := readInputCompilePostV1(r)
 	if reqErr != nil {
 		writer.Error(w, http.StatusBadRequest, reqErr)
 		return
@@ -1657,7 +1654,6 @@ func (s *Server) v1DataPost(w http.ResponseWriter, r *http.Request) {
 	strictBuiltinErrors := getBoolParam(r.URL, types.ParamStrictBuiltinErrors, true)
 
 	m.Timer(metrics.RegoInputParse).Start()
-
 	input, goInput, err := readInputPostV1(r)
 	if err != nil {
 		writer.ErrorString(w, http.StatusBadRequest, types.CodeInvalidParameter, err)
@@ -2035,7 +2031,6 @@ func (s *Server) v1PoliciesGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) v1PoliciesList(w http.ResponseWriter, r *http.Request) {
-
 	ctx := r.Context()
 
 	txn, err := s.store.NewTransaction(ctx)
@@ -2349,7 +2344,6 @@ func (s *Server) v1StatusGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) checkPolicyIDScope(ctx context.Context, txn storage.Transaction, id string) error {
-
 	bs, err := s.store.GetPolicy(ctx, txn, id)
 	if err != nil {
 		return err
@@ -2364,7 +2358,6 @@ func (s *Server) checkPolicyIDScope(ctx context.Context, txn storage.Transaction
 }
 
 func (s *Server) checkPolicyPackageScope(ctx context.Context, txn storage.Transaction, pkg *ast.Package) error {
-
 	path, err := pkg.Path.Ptr()
 	if err != nil {
 		return err
@@ -2379,7 +2372,6 @@ func (s *Server) checkPolicyPackageScope(ctx context.Context, txn storage.Transa
 }
 
 func (s *Server) checkPathScope(ctx context.Context, txn storage.Transaction, path storage.Path) error {
-
 	names, err := bundle.ReadBundleNamesFromStore(ctx, s.store, txn)
 	if err != nil {
 		if !storage.IsNotFound(err) {
@@ -2473,7 +2465,6 @@ func (s *Server) abortAuto(ctx context.Context, txn storage.Transaction, w http.
 }
 
 func (s *Server) loadModules(ctx context.Context, txn storage.Transaction) (map[string]*ast.Module, error) {
-
 	ids, err := s.store.ListPolicies(ctx, txn)
 	if err != nil {
 		return nil, err
@@ -2533,7 +2524,6 @@ func (s *Server) makeRego(_ context.Context,
 }
 
 func (s *Server) prepareV1PatchSlice(root string, ops []types.PatchV1) (result []patchImpl, err error) {
-
 	root = "/" + strings.Trim(root, "/")
 
 	for _, op := range ops {
@@ -2586,7 +2576,6 @@ func (s *Server) generateDecisionID() string {
 }
 
 func (s *Server) getProvenance(br bundleRevisions) *types.ProvenanceV1 {
-
 	p := &types.ProvenanceV1{
 		Version:   version.Version,
 		Vcs:       version.Vcs,
@@ -2671,7 +2660,6 @@ func validateQuery(query string) (ast.Body, error) {
 }
 
 func getBoolParam(url *url.URL, name string, ifEmpty bool) bool {
-
 	p, ok := url.Query()[name]
 	if !ok {
 		return false
@@ -2693,7 +2681,6 @@ func getBoolParam(url *url.URL, name string, ifEmpty bool) bool {
 }
 
 func getStringSliceParam(url *url.URL, name string) []string {
-
 	p, ok := url.Query()[name]
 	if !ok {
 		return nil
@@ -2723,7 +2710,6 @@ func getExplain(p []string, zero types.ExplainModeV1) types.ExplainModeV1 {
 }
 
 func readInputV0(r *http.Request) (ast.Value, *interface{}, error) {
-
 	parsed, ok := authorizer.GetBodyOnContext(r.Context())
 	if ok {
 		v, err := ast.InterfaceToValue(parsed)
@@ -2731,7 +2717,8 @@ func readInputV0(r *http.Request) (ast.Value, *interface{}, error) {
 	}
 
 	// decompress the input if sent as zip
-	body, err := util.ReadMaybeCompressedBody(r)
+	fmt.Println("readInputV0")
+	body, err := util.ReadMaybeCompressedBodyBytes(r)
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not decompress the body: %w", err)
 	}
@@ -2739,17 +2726,18 @@ func readInputV0(r *http.Request) (ast.Value, *interface{}, error) {
 	var x interface{}
 
 	if strings.Contains(r.Header.Get("Content-Type"), "yaml") {
-		bs, err := io.ReadAll(body)
-		if err != nil {
-			return nil, nil, err
-		}
+		// bs, err := io.ReadAll(body)
+		// if err != nil {
+		// 	return nil, nil, err
+		// }
+		bs := body
 		if len(bs) > 0 {
 			if err = util.Unmarshal(bs, &x); err != nil {
 				return nil, nil, fmt.Errorf("body contains malformed input document: %w", err)
 			}
 		}
 	} else {
-		dec := util.NewJSONDecoder(body)
+		dec := util.NewJSONDecoder(bytes.NewBuffer(body))
 		if err := dec.Decode(&x); err != nil && err != io.EOF {
 			return nil, nil, fmt.Errorf("body contains malformed input document: %w", err)
 		}
@@ -2769,7 +2757,6 @@ func readInputGetV1(str string) (ast.Value, *interface{}, error) {
 }
 
 func readInputPostV1(r *http.Request) (ast.Value, *interface{}, error) {
-
 	parsed, ok := authorizer.GetBodyOnContext(r.Context())
 	if ok {
 		if obj, ok := parsed.(map[string]interface{}); ok {
@@ -2784,7 +2771,8 @@ func readInputPostV1(r *http.Request) (ast.Value, *interface{}, error) {
 	var request types.DataRequestV1
 
 	// decompress the input if sent as zip
-	body, err := util.ReadMaybeCompressedBody(r)
+	fmt.Println("readInputPostV1")
+	body, err := util.ReadMaybeCompressedBodyBytes(r)
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not decompress the body: %w", err)
 	}
@@ -2793,17 +2781,18 @@ func readInputPostV1(r *http.Request) (ast.Value, *interface{}, error) {
 	// There is no standard for yaml mime-type so we just look for
 	// anything related
 	if strings.Contains(ct, "yaml") {
-		bs, err := io.ReadAll(body)
-		if err != nil {
-			return nil, nil, err
-		}
+		bs := body
+		// bs, err := io.ReadAll(body)
+		// if err != nil {
+		// 	return nil, nil, err
+		// }
 		if len(bs) > 0 {
 			if err = util.Unmarshal(bs, &request); err != nil {
 				return nil, nil, fmt.Errorf("body contains malformed input document: %w", err)
 			}
 		}
 	} else {
-		dec := util.NewJSONDecoder(body)
+		dec := util.NewJSONDecoder(bytes.NewBuffer(body))
 		if err := dec.Decode(&request); err != nil && err != io.EOF {
 			return nil, nil, fmt.Errorf("body contains malformed input document: %w", err)
 		}
@@ -2828,14 +2817,44 @@ type compileRequestOptions struct {
 	DisableInlining []string
 }
 
-func readInputCompilePostV1(r io.ReadCloser) (*compileRequest, *types.ErrorV1) {
-
+func readInputCompilePostV1(r *http.Request) (*compileRequest, *types.ErrorV1) {
 	var request types.CompileRequestV1
 
-	err := util.NewJSONDecoder(r).Decode(&request)
-	if err != nil {
-		return nil, types.NewErrorV1(types.CodeInvalidParameter, "error(s) occurred while decoding request: %v", err.Error())
+	// Our strategy if the input is already parsed is to round-trip the rest of
+	// the object, and to save the input for later. For very large JSON objects (>1 GB), this strategy can save 300 MB of memory or more.
+	parsed, ok := authorizer.GetBodyOnContext(r.Context())
+	if ok {
+		if obj, ok := parsed.(map[string]interface{}); ok {
+			// Copy over only the relevant fields.
+			tempMap := make(map[string]interface{}, 3)
+			for k, v := range obj {
+				switch k {
+				case "query", "unknowns", "options":
+					tempMap[k] = v
+				}
+			}
+			// Round-trip the non-input fields into the request struct.
+			bs, err := json.Marshal(tempMap)
+			if err != nil {
+				return nil, types.NewErrorV1(types.CodeInvalidParameter, "error(s) occurred while converting request: %v", err)
+			}
+			util.NewJSONDecoder(bytes.NewBuffer(bs)).Decode(&request)
+			// Handle input separately, since it may be large.
+			if input, ok := obj["input"]; ok {
+				request.Input = &input
+			}
+		}
+	} else {
+		fmt.Println("Failed decomp case.")
+		body, err := util.ReadMaybeCompressedBodyBytes(r)
+		if err != nil {
+			return nil, types.NewErrorV1(types.CodeInvalidParameter, "could not decompress the body")
+		}
+		if err := util.NewJSONDecoder(bytes.NewBuffer(body)).Decode(&request); err != nil {
+			return nil, types.NewErrorV1(types.CodeInvalidParameter, "error(s) occurred while decoding request: %v", err.Error())
+		}
 	}
+	// Continue normal processing for the request.
 
 	query, err := ast.ParseBody(request.Query)
 	if err != nil {
@@ -2944,7 +2963,6 @@ type decisionLogger struct {
 }
 
 func (l decisionLogger) Log(ctx context.Context, txn storage.Transaction, path string, query string, goInput *interface{}, astInput ast.Value, goResults *interface{}, ndbCache builtins.NDBCache, err error, m metrics.Metrics) error {
-
 	bundles := map[string]BundleInfo{}
 	for name, rev := range l.revisions {
 		bundles[name] = BundleInfo{Revision: rev}
