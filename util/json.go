@@ -6,10 +6,11 @@ package util
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"reflect"
+
+	"github.com/open-policy-agent/opa/internal/json/encoding/json"
 
 	"sigs.k8s.io/yaml"
 
@@ -34,16 +35,25 @@ func unmarshalJSON(bs []byte, x interface{}, ext bool) error {
 		}
 		return err
 	}
+	var extra interface{}
+	if decoder.InputOffset() != int64(len(bs)) {
+		if err := decoder.Decode(extra); err != nil && err != io.EOF {
+			return err
+		}
+		if extra != nil {
+			return fmt.Errorf("error: invalid character '%s' after top-level value", extra)
+		}
+	}
 
 	// Since decoder.Decode validates only the first json structure in bytes,
 	// check if decoder has more bytes to consume to validate whole input bytes.
-	tok, err := decoder.Token()
-	if tok != nil {
-		return fmt.Errorf("error: invalid character '%s' after top-level value", tok)
-	}
-	if err != nil && err != io.EOF {
-		return err
-	}
+	// tok, err := decoder.Token()
+	// if tok != nil {
+	// 	return fmt.Errorf("error: invalid character '%s' after top-level value", tok)
+	// }
+	// if err != nil && err != io.EOF {
+	// 	return err
+	// }
 	return nil
 }
 
@@ -54,6 +64,7 @@ func unmarshalJSON(bs []byte, x interface{}, ext bool) error {
 func NewJSONDecoder(r io.Reader) *json.Decoder {
 	decoder := json.NewDecoder(r)
 	decoder.UseNumber()
+	decoder.ZeroCopy()
 	return decoder
 }
 
