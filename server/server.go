@@ -1336,7 +1336,7 @@ func (s *Server) v1CompilePost(w http.ResponseWriter, r *http.Request) {
 	m.Timer(metrics.RegoQueryParse).Start()
 
 	// decompress the input if sent as zip
-	body, err := util.ReadMaybeCompressedBody(r)
+	_, body, err := util.ReadMaybeCompressedBody(r)
 	if err != nil {
 		writer.Error(w, http.StatusBadRequest, types.NewErrorV1(types.CodeInvalidParameter, "could not decompress the body"))
 		return
@@ -2731,7 +2731,7 @@ func readInputV0(r *http.Request) (ast.Value, *interface{}, error) {
 	}
 
 	// decompress the input if sent as zip
-	body, err := util.ReadMaybeCompressedBody(r)
+	_, bodyBytes, err := util.ReadMaybeCompressedBody(r)
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not decompress the body: %w", err)
 	}
@@ -2739,17 +2739,13 @@ func readInputV0(r *http.Request) (ast.Value, *interface{}, error) {
 	var x interface{}
 
 	if strings.Contains(r.Header.Get("Content-Type"), "yaml") {
-		bs, err := io.ReadAll(body)
-		if err != nil {
-			return nil, nil, err
-		}
-		if len(bs) > 0 {
-			if err = util.Unmarshal(bs, &x); err != nil {
+		if len(bodyBytes) > 0 {
+			if err = util.Unmarshal(bodyBytes, &x); err != nil {
 				return nil, nil, fmt.Errorf("body contains malformed input document: %w", err)
 			}
 		}
 	} else {
-		dec := util.NewJSONDecoder(body)
+		dec := util.NewJSONDecoder(bytes.NewBuffer(bodyBytes))
 		if err := dec.Decode(&x); err != nil && err != io.EOF {
 			return nil, nil, fmt.Errorf("body contains malformed input document: %w", err)
 		}
@@ -2784,7 +2780,7 @@ func readInputPostV1(r *http.Request) (ast.Value, *interface{}, error) {
 	var request types.DataRequestV1
 
 	// decompress the input if sent as zip
-	body, err := util.ReadMaybeCompressedBody(r)
+	_, bodyBytes, err := util.ReadMaybeCompressedBody(r)
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not decompress the body: %w", err)
 	}
@@ -2793,17 +2789,13 @@ func readInputPostV1(r *http.Request) (ast.Value, *interface{}, error) {
 	// There is no standard for yaml mime-type so we just look for
 	// anything related
 	if strings.Contains(ct, "yaml") {
-		bs, err := io.ReadAll(body)
-		if err != nil {
-			return nil, nil, err
-		}
-		if len(bs) > 0 {
-			if err = util.Unmarshal(bs, &request); err != nil {
+		if len(bodyBytes) > 0 {
+			if err = util.Unmarshal(bodyBytes, &request); err != nil {
 				return nil, nil, fmt.Errorf("body contains malformed input document: %w", err)
 			}
 		}
 	} else {
-		dec := util.NewJSONDecoder(body)
+		dec := util.NewJSONDecoder(bytes.NewBuffer(bodyBytes))
 		if err := dec.Decode(&request); err != nil && err != io.EOF {
 			return nil, nil, fmt.Errorf("body contains malformed input document: %w", err)
 		}
@@ -2828,11 +2820,10 @@ type compileRequestOptions struct {
 	DisableInlining []string
 }
 
-func readInputCompilePostV1(r io.ReadCloser) (*compileRequest, *types.ErrorV1) {
-
+func readInputCompilePostV1(reqBytes []byte) (*compileRequest, *types.ErrorV1) {
 	var request types.CompileRequestV1
 
-	err := util.NewJSONDecoder(r).Decode(&request)
+	err := util.NewJSONDecoder(bytes.NewBuffer(reqBytes)).Decode(&request)
 	if err != nil {
 		return nil, types.NewErrorV1(types.CodeInvalidParameter, "error(s) occurred while decoding request: %v", err.Error())
 	}
