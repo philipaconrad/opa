@@ -135,6 +135,42 @@ const largeEvent = `{
 	"timestamp": "2019-06-04T19:02:35.692Z"
   }`
 
+func BenchmarkEventAST(b *testing.B) {
+	ctx := context.Background()
+	store := inmem.New()
+
+	manager, err := plugins.New(nil, "test", store)
+	if err != nil {
+		b.Fatal(err)
+	} else if err := manager.Start(ctx); err != nil {
+		b.Fatal(err)
+	}
+
+	cfg := &Config{Service: "svc"}
+	t := plugins.DefaultTriggerMode
+	if err := cfg.validateAndInjectDefaults([]string{"svc"}, nil, &t); err != nil {
+		b.Fatal(err)
+	}
+	plugin := New(cfg, manager)
+
+	var event EventV1
+	if err := util.UnmarshalJSON([]byte(largeEvent), &event); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		input, err := event.AST()
+		if err != nil {
+			b.Fatal(err)
+		}
+		if input == nil || plugin == nil {
+			b.Fatal("Input unexpectedly nil.")
+		}
+	}
+}
+
 func BenchmarkMaskingNop(b *testing.B) {
 
 	ctx := context.Background()

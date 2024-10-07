@@ -116,38 +116,39 @@ var requestIDKey = ast.StringTerm("req_id")
 // mask policy to the event.
 func (e *EventV1) AST() (ast.Value, error) {
 	var err error
-	event := ast.NewObject()
+	eventKVs := make([][2]*ast.Term, 0, 19)
 
 	if e.Labels != nil {
-		labelsObj := ast.NewObject()
+		labels := make([][2]*ast.Term, 0, len(e.Labels))
 		for k, v := range e.Labels {
-			labelsObj.Insert(ast.StringTerm(k), ast.StringTerm(v))
+			labels = append(labels, [2]*ast.Term{ast.StringTerm(k), ast.StringTerm(v)})
 		}
-		event.Insert(labelsKey, ast.NewTerm(labelsObj))
+		eventKVs = append(eventKVs, [2]*ast.Term{labelsKey, ast.ObjectTerm(labels...)})
 	} else {
-		event.Insert(labelsKey, ast.NullTerm())
+		eventKVs = append(eventKVs, [2]*ast.Term{labelsKey, ast.NullTerm()})
 	}
 
-	event.Insert(decisionIDKey, ast.StringTerm(e.DecisionID))
+	eventKVs = append(eventKVs, [2]*ast.Term{decisionIDKey, ast.StringTerm(e.DecisionID)})
 
 	if len(e.Revision) > 0 {
-		event.Insert(revisionKey, ast.StringTerm(e.Revision))
+		eventKVs = append(eventKVs, [2]*ast.Term{revisionKey, ast.StringTerm(e.Revision)})
 	}
 
 	if len(e.Bundles) > 0 {
-		bundlesObj := ast.NewObject()
+		bundlesItems := make([][2]*ast.Term, 0, len(e.Bundles))
+
 		for k, v := range e.Bundles {
-			bundlesObj.Insert(ast.StringTerm(k), ast.NewTerm(v.AST()))
+			bundlesItems = append(bundlesItems, [2]*ast.Term{ast.StringTerm(k), ast.NewTerm(v.AST())})
 		}
-		event.Insert(bundlesKey, ast.NewTerm(bundlesObj))
+		eventKVs = append(eventKVs, [2]*ast.Term{bundlesKey, ast.ObjectTerm(bundlesItems...)})
 	}
 
 	if len(e.Path) > 0 {
-		event.Insert(pathKey, ast.StringTerm(e.Path))
+		eventKVs = append(eventKVs, [2]*ast.Term{pathKey, ast.StringTerm(e.Path)})
 	}
 
 	if len(e.Query) > 0 {
-		event.Insert(queryKey, ast.StringTerm(e.Query))
+		eventKVs = append(eventKVs, [2]*ast.Term{queryKey, ast.StringTerm(e.Query)})
 	}
 
 	if e.Input != nil {
@@ -157,7 +158,7 @@ func (e *EventV1) AST() (ast.Value, error) {
 				return nil, err
 			}
 		}
-		event.Insert(inputKey, ast.NewTerm(e.inputAST))
+		eventKVs = append(eventKVs, [2]*ast.Term{inputKey, ast.NewTerm(e.inputAST)})
 	}
 
 	if e.Result != nil {
@@ -165,7 +166,7 @@ func (e *EventV1) AST() (ast.Value, error) {
 		if err != nil {
 			return nil, err
 		}
-		event.Insert(resultKey, ast.NewTerm(results))
+		eventKVs = append(eventKVs, [2]*ast.Term{resultKey, ast.NewTerm(results)})
 	}
 
 	if e.MappedResult != nil {
@@ -173,7 +174,7 @@ func (e *EventV1) AST() (ast.Value, error) {
 		if err != nil {
 			return nil, err
 		}
-		event.Insert(mappedResultKey, ast.NewTerm(mResults))
+		eventKVs = append(eventKVs, [2]*ast.Term{mappedResultKey, ast.NewTerm(mResults)})
 	}
 
 	if e.NDBuiltinCache != nil {
@@ -181,7 +182,7 @@ func (e *EventV1) AST() (ast.Value, error) {
 		if err != nil {
 			return nil, err
 		}
-		event.Insert(ndBuiltinCacheKey, ast.NewTerm(ndbCache))
+		eventKVs = append(eventKVs, [2]*ast.Term{ndBuiltinCacheKey, ast.NewTerm(ndbCache)})
 	}
 
 	if len(e.Erased) > 0 {
@@ -189,7 +190,7 @@ func (e *EventV1) AST() (ast.Value, error) {
 		for i, v := range e.Erased {
 			erased[i] = ast.StringTerm(v)
 		}
-		event.Insert(erasedKey, ast.NewTerm(ast.NewArray(erased...)))
+		eventKVs = append(eventKVs, [2]*ast.Term{erasedKey, ast.ArrayTerm(erased...)})
 	}
 
 	if len(e.Masked) > 0 {
@@ -197,7 +198,7 @@ func (e *EventV1) AST() (ast.Value, error) {
 		for i, v := range e.Masked {
 			masked[i] = ast.StringTerm(v)
 		}
-		event.Insert(maskedKey, ast.NewTerm(ast.NewArray(masked...)))
+		eventKVs = append(eventKVs, [2]*ast.Term{maskedKey, ast.ArrayTerm(masked...)})
 	}
 
 	if e.Error != nil {
@@ -205,11 +206,11 @@ func (e *EventV1) AST() (ast.Value, error) {
 		if err != nil {
 			return nil, err
 		}
-		event.Insert(errorKey, ast.NewTerm(evalErr))
+		eventKVs = append(eventKVs, [2]*ast.Term{errorKey, ast.NewTerm(evalErr)})
 	}
 
 	if len(e.RequestedBy) > 0 {
-		event.Insert(requestedByKey, ast.StringTerm(e.RequestedBy))
+		eventKVs = append(eventKVs, [2]*ast.Term{requestedByKey, ast.StringTerm(e.RequestedBy)})
 	}
 
 	// Use the timestamp JSON marshaller to ensure the format is the same as
@@ -218,20 +219,21 @@ func (e *EventV1) AST() (ast.Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	event.Insert(timestampKey, ast.StringTerm(strings.Trim(string(timeBytes), "\"")))
+	eventKVs = append(eventKVs, [2]*ast.Term{timestampKey, ast.StringTerm(strings.Trim(string(timeBytes), "\""))})
 
 	if e.Metrics != nil {
 		m, err := ast.InterfaceToValue(e.Metrics)
 		if err != nil {
 			return nil, err
 		}
-		event.Insert(metricsKey, ast.NewTerm(m))
+		eventKVs = append(eventKVs, [2]*ast.Term{metricsKey, ast.NewTerm(m)})
 	}
 
 	if e.RequestID > 0 {
-		event.Insert(requestIDKey, ast.UIntNumberTerm(e.RequestID))
+		eventKVs = append(eventKVs, [2]*ast.Term{requestIDKey, ast.UIntNumberTerm(e.RequestID)})
 	}
 
+	event := ast.NewObject(eventKVs...)
 	return event, nil
 }
 
