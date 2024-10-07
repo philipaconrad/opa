@@ -954,10 +954,10 @@ func (p *Plugin) encodeAndBufferEvent(event EventV1) {
 		}
 
 		// Attempt to encode the event again, dropping the ND builtins cache.
-		newEvent := event
-		newEvent.NDBuiltinCache = nil
+		// We modify the struct in-place to avoid a full struct copy.
+		event.NDBuiltinCache = nil
 
-		result, err = p.encodeEvent(newEvent)
+		result, err = p.encodeEvent(event)
 		if err != nil {
 			if p.metrics != nil {
 				p.metrics.Counter(logEncodingFailureCounterName).Incr()
