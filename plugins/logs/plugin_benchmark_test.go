@@ -1,11 +1,20 @@
 package logs
 
 import (
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/open-policy-agent/opa/logging"
 	"github.com/open-policy-agent/opa/plugins"
+	"github.com/open-policy-agent/opa/server"
 	"github.com/open-policy-agent/opa/storage"
 	inmem "github.com/open-policy-agent/opa/storage/inmem/test"
 	"github.com/open-policy-agent/opa/util"
@@ -300,4 +309,156 @@ func BenchmarkMaskingErase(b *testing.B) {
 			b.Fatal("Expected input to be erased")
 		}
 	}
+}
+
+func BenchmarkPluginLogging(b *testing.B) {
+	ctx := context.Background()
+
+	sizes := []int{10, 100, 1000, 10000}
+
+	for _, size := range sizes {
+		b.Run(strconv.FormatInt(int64(size), 10), func(b *testing.B) {
+			fixture := newBenchFixture(b)
+			defer fixture.server.stop()
+
+			if err := fixture.plugin.Start(ctx); err != nil {
+				b.Fatal(err)
+			}
+
+			var input interface{} = map[string]interface{}{"method": "GET"}
+			var result interface{} = false
+
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				for j := 0; j < size; j++ {
+					_ = fixture.plugin.Log(ctx, &server.Info{
+						DecisionID: "abc",
+						Path:       "data.foo.bar",
+						Input:      &input,
+						Results:    &result,
+						RemoteAddr: "test",
+						Timestamp:  time.Now().UTC(),
+					})
+				}
+				if _, err := fixture.plugin.oneShot(ctx); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.StopTimer()
+
+			timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			fixture.plugin.Stop(timeoutCtx)
+		})
+	}
+}
+
+type benchTestFixture struct {
+	manager *plugins.Manager
+	plugin  *Plugin
+	server  *benchTestServer
+}
+
+func newBenchFixture(b *testing.B) benchTestFixture {
+	bts := benchTestServer{
+		b:          b,
+		expCode:    200,
+		seenEvents: 0,
+	}
+
+	bts.start()
+
+	managerConfig := []byte(fmt.Sprintf(`{
+			"labels": {
+				"app": "example-app"
+			},
+			"services": [
+				{
+					"name": "example",
+					"url": %q,
+					"credentials": {
+						"bearer": {
+							"scheme": "Bearer",
+							"token": "secret"
+						}
+					}
+				}
+			]}`, bts.server.URL))
+
+	manager, err := plugins.New(
+		managerConfig,
+		"test-instance-id",
+		inmem.New(),
+		plugins.GracefulShutdownPeriod(10))
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	config, err := ParseConfig([]byte(`{"service": "example"}`), manager.Services(), manager.Plugins())
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	if s, ok := manager.PluginStatus()[Name]; ok {
+		b.Fatalf("Unexpected status found in plugin manager for %s: %+v", Name, s)
+	}
+
+	p := New(config, manager)
+	p.logger.SetLevel(logging.Error)
+
+	return benchTestFixture{
+		manager: manager,
+		plugin:  p,
+		server:  &bts,
+	}
+}
+
+var benchGzipReaderPool = sync.Pool{
+	New: func() interface{} {
+		item := new(gzip.Reader)
+		return item
+	},
+}
+
+type benchTestServer struct {
+	b          *testing.B
+	expCode    int
+	seenEvents int
+	server     *httptest.Server
+	path       string
+}
+
+func (b *benchTestServer) handle(w http.ResponseWriter, r *http.Request) {
+	// Use a pool to reduce alloc overhead from the gzip.Readers.
+	gr := benchGzipReaderPool.Get().(*gzip.Reader)
+	if err := gr.Reset(r.Body); err != nil {
+		b.b.Fatal(err)
+	}
+	defer gr.Close()
+	defer benchGzipReaderPool.Put(gr)
+
+	var events []EventV1
+	if err := json.NewDecoder(gr).Decode(&events); err != nil {
+		b.b.Fatal(err)
+	}
+	if err := gr.Close(); err != nil {
+		b.b.Fatal(err)
+	}
+	if b.path != "" && r.URL.Path != b.path {
+		b.b.Fatalf("expecting the request path %s to equal the configured path: %s", r.URL.Path, b.path)
+	}
+
+	b.seenEvents += len(events)
+
+	w.WriteHeader(b.expCode)
+}
+
+func (b *benchTestServer) start() {
+	b.server = httptest.NewServer(http.HandlerFunc(b.handle))
+}
+
+// stop the testServer. This should only be done at the end of a test!
+func (b *benchTestServer) stop() {
+	b.server.Close()
 }

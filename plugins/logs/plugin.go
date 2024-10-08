@@ -866,6 +866,7 @@ func (p *Plugin) oneShot(ctx context.Context) (ok bool, err error) {
 	p.buffer = newLogBuffer(*p.config.Reporting.BufferSizeLimitBytes)
 	p.enc = newChunkEncoder(*p.config.Reporting.UploadSizeLimitBytes).WithMetrics(p.metrics)
 	p.mtx.Unlock()
+	defer oldChunkEnc.release()
 
 	// Along with uploading the compressed events in the buffer
 	// to the remote server, flush any pending compressed data to the

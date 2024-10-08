@@ -9,7 +9,10 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"slices"
+	"sync"
 
 	"github.com/open-policy-agent/opa/metrics"
 )
@@ -23,6 +26,32 @@ const (
 	encSoftLimitScaleDownCounterName   = "enc_soft_limit_scale_down"
 	encSoftLimitStableCounterName      = "enc_soft_limit_stable"
 )
+
+// This pool stores two types of bytes.Buffer: those used for json encoding, and
+// those used for buffering gzipped event blobs.
+var bytesBufferPool = sync.Pool{
+	New: func() interface{} {
+		item := new(bytes.Buffer)
+		return item
+	},
+}
+
+var gzipWriterPool = sync.Pool{
+	New: func() interface{} {
+		// Note(philipc): gzip.NewWriter is required here, because
+		// `new(gzip.Writer)` + `writer.Reset(target)` is NOT the same as
+		// `gzip.NewWriter(target)`
+		item := gzip.NewWriter(io.Discard)
+		return item
+	},
+}
+
+var gzipReaderPool = sync.Pool{
+	New: func() interface{} {
+		item := new(gzip.Reader)
+		return item
+	},
+}
 
 // chunkEncoder implements log buffer chunking and compression. Log events are
 // written to the encoder and the encoder outputs chunks that are fit to the
@@ -45,6 +74,7 @@ func newChunkEncoder(limit int64) *chunkEncoder {
 		softLimitScaleUpExponent:   0,
 		softLimitScaleDownExponent: 0,
 	}
+	enc.initialize()
 	enc.update()
 
 	return enc
@@ -56,10 +86,14 @@ func (enc *chunkEncoder) WithMetrics(m metrics.Metrics) *chunkEncoder {
 }
 
 func (enc *chunkEncoder) Write(event EventV1) (result [][]byte, err error) {
-	var buf bytes.Buffer
+	// TODO
+	// buf := bytesBufferPool.Get().(*bytes.Buffer)
+	buf := bytes.Buffer{}
 	if err := json.NewEncoder(&buf).Encode(event); err != nil {
 		return nil, err
 	}
+	// defer buf.Reset()
+	// defer bytesBufferPool.Put(buf)
 
 	return enc.WriteBytes(buf.Bytes())
 }
@@ -116,6 +150,7 @@ func (enc *chunkEncoder) writeClose() error {
 	return enc.w.Close()
 }
 
+// Flush all events in the chunkEncoder, then reset the chunkEncoder state.
 func (enc *chunkEncoder) Flush() ([][]byte, error) {
 	if enc.bytesWritten == 0 {
 		return nil, nil
@@ -180,7 +215,8 @@ func (enc *chunkEncoder) reset() ([][]byte, error) {
 		return nil, decErr
 	}
 
-	enc.initialize()
+	// Return resources to the pool, and reinitialize.
+	enc.clear()
 
 	var result [][]byte
 	for _, event := range events {
@@ -196,19 +232,49 @@ func (enc *chunkEncoder) reset() ([][]byte, error) {
 	return result, nil
 }
 
+// Resets the state of the chunkEncoder, returning the original chunkEncoder's
+// buffered event slice.
 func (enc *chunkEncoder) update() [][]byte {
-	buf := enc.buf
-	enc.initialize()
-	if buf != nil {
-		return [][]byte{buf.Bytes()}
+	var originalChunks [][]byte
+	if enc.buf != nil {
+		originalChunks = [][]byte{slices.Clone(enc.buf.Bytes())}
+	}
+	// Release resources back to the pool, and reinitialize.
+	enc.clear()
+	if originalChunks != nil {
+		return originalChunks
 	}
 	return nil
 }
 
+// Initializes the buffer, bytesWritten, and gzip.Writer for the chunkEncoder.
 func (enc *chunkEncoder) initialize() {
-	enc.buf = new(bytes.Buffer)
+	gzipWriter := gzipWriterPool.Get().(*gzip.Writer)
+	buffer := bytesBufferPool.Get().(*bytes.Buffer)
+	buffer.Reset()
+	gzipWriter.Reset(buffer)
+
+	enc.buf = buffer
 	enc.bytesWritten = 0
-	enc.w = gzip.NewWriter(enc.buf)
+	enc.w = gzipWriter
+}
+
+func (enc *chunkEncoder) clear() {
+	enc.buf.Reset()
+	enc.bytesWritten = 0
+	enc.w.Reset(enc.buf)
+}
+
+// Returns pool resources explicitly.
+func (enc *chunkEncoder) release() {
+	if enc.buf != nil {
+		defer enc.buf.Reset()
+		defer bytesBufferPool.Put(enc.buf)
+	}
+	if enc.w != nil {
+		defer enc.w.Close() // Explicitly ignore errors here. State will be reset on reinit later.
+		defer gzipWriterPool.Put(enc.w)
+	}
 }
 
 // chunkDecoder decodes the encoded chunks and outputs the log events
@@ -223,16 +289,20 @@ func newChunkDecoder(raw []byte) *chunkDecoder {
 }
 
 func (dec *chunkDecoder) decode() ([]EventV1, error) {
-	gr, err := gzip.NewReader(bytes.NewReader(dec.raw))
-	if err != nil {
+	// We pull a gzip.Reader from the pool, and initialize it to use the encoded
+	// chunk. Later, we return it to the pool, so that if we need to decode many
+	// events back-to-back, we can skip allocating it again.
+	gzReader := gzipReaderPool.Get().(*gzip.Reader)
+	if err := gzReader.Reset(bytes.NewReader(dec.raw)); err != nil {
 		return nil, err
 	}
+	defer gzReader.Close()
+	defer gzipReaderPool.Put(gzReader)
 
 	var events []EventV1
-	if err := json.NewDecoder(gr).Decode(&events); err != nil {
+	if err := json.NewDecoder(gzReader).Decode(&events); err != nil {
 		return nil, err
 	}
-	gr.Close()
 
 	return events, nil
 }
