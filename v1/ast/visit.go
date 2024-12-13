@@ -112,14 +112,14 @@ func walk(v Visitor, x interface{}) {
 			Walk(w, x[i])
 		}
 	case *object:
-		x.Foreach(func(k, vv *Term) {
-			Walk(w, k)
-			Walk(w, vv)
-		})
+		for _, node := range x.sortedKeys() {
+			Walk(w, node.key)
+			Walk(w, node.value)
+		}
 	case *Array:
-		x.Foreach(func(t *Term) {
-			Walk(w, t)
-		})
+		for i := 0; i < x.Len(); i++ {
+			Walk(w, x.Elem(i))
+		}
 	case Set:
 		x.Foreach(func(t *Term) {
 			Walk(w, t)
@@ -352,12 +352,13 @@ func (vis *GenericVisitor) Walk(x interface{}) {
 			vis.Walk(x[i])
 		}
 	case *object:
-		x.Foreach(func(k, _ *Term) {
-			vis.Walk(k)
-			vis.Walk(x.Get(k))
-		})
+		for _, node := range x.sortedKeys() {
+			vis.Walk(node.key)
+			vis.Walk(node.value)
+		}
 	case Object:
-		for _, k := range x.Keys() {
+		ki := x.KeysIterator()
+		for k, more := ki.Next(); more; k, more = ki.Next() {
 			vis.Walk(k)
 			vis.Walk(x.Get(k))
 		}
@@ -492,19 +493,20 @@ func (vis *BeforeAfterVisitor) Walk(x interface{}) {
 			vis.Walk(x[i])
 		}
 	case *object:
-		x.Foreach(func(k, _ *Term) {
-			vis.Walk(k)
-			vis.Walk(x.Get(k))
-		})
+		for _, node := range x.sortedKeys() {
+			vis.Walk(node.key)
+			vis.Walk(node.value)
+		}
 	case Object:
-		x.Foreach(func(k, _ *Term) {
+		ki := x.KeysIterator()
+		for k, more := ki.Next(); more; k, more = ki.Next() {
 			vis.Walk(k)
 			vis.Walk(x.Get(k))
-		})
+		}
 	case *Array:
-		x.Foreach(func(t *Term) {
-			vis.Walk(t)
-		})
+		for i := 0; i < x.Len(); i++ {
+			vis.Walk(x.Elem(i))
+		}
 	case Set:
 		xSlice := x.Slice()
 		for i := range xSlice {
@@ -579,9 +581,11 @@ func (vis *VarVisitor) Vars() VarSet {
 func (vis *VarVisitor) visit(v interface{}) bool {
 	if vis.params.SkipObjectKeys {
 		if o, ok := v.(Object); ok {
-			o.Foreach(func(_, v *Term) {
+			ki := o.KeysIterator()
+			for k, more := ki.Next(); more; k, more = ki.Next() {
+				v := o.Get(k)
 				vis.Walk(v)
-			})
+			}
 			return true
 		}
 	}
@@ -741,14 +745,14 @@ func (vis *VarVisitor) Walk(x interface{}) {
 			vis.Walk(x[i])
 		}
 	case *object:
-		x.Foreach(func(k, _ *Term) {
-			vis.Walk(k)
-			vis.Walk(x.Get(k))
-		})
+		for _, node := range x.sortedKeys() {
+			vis.Walk(node.key)
+			vis.Walk(node.value)
+		}
 	case *Array:
-		x.Foreach(func(t *Term) {
-			vis.Walk(t)
-		})
+		for i := 0; i < x.Len(); i++ {
+			vis.Walk(x.Elem(i))
+		}
 	case Set:
 		xSlice := x.Slice()
 		for i := range xSlice {

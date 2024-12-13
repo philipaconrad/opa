@@ -51,7 +51,6 @@ func (u *unifier) isSafe(x Var) bool {
 }
 
 func (u *unifier) unify(a *Term, b *Term) {
-
 	switch a := a.Value.(type) {
 
 	case Var:
@@ -155,12 +154,13 @@ func (u *unifier) unify(a *Term, b *Term) {
 			}
 		case *object:
 			if a.Len() == b.Len() {
-				_ = a.Iter(func(k, v *Term) error {
-					if v2 := b.Get(k); v2 != nil {
-						u.unify(v, v2)
+				// Note(philipc): Originally, we used Iter here, but closures
+				// are not well-optimized currently.
+				for _, node := range a.elems {
+					if v2 := b.Get(node.key); v2 != nil {
+						u.unify(node.value, v2)
 					}
-					return nil
-				}) // impossible to return error
+				}
 			}
 		}
 
