@@ -187,7 +187,7 @@ func valueToInterface(v Value, resolver Resolver, opt JSONOpt) (interface{}, err
 	case String:
 		return string(v), nil
 	case *Array:
-		buf := []interface{}{}
+		buf := make([]interface{}, 0, v.Len())
 		for i := 0; i < v.Len(); i++ {
 			x1, err := valueToInterface(v.Elem(i).Value, resolver, opt)
 			if err != nil {
@@ -198,29 +198,31 @@ func valueToInterface(v Value, resolver Resolver, opt JSONOpt) (interface{}, err
 		return buf, nil
 	case *object:
 		buf := make(map[string]interface{}, v.Len())
-		err := v.Iter(func(k, v *Term) error {
+		// This bytes.Buffer can be reused for all of the keys, saving many
+		// allocations over a large object.
+		var keyBuf bytes.Buffer
+		// Note: We could use `Iter` here, but closures are expensive.
+		for _, node := range v.sortedKeys() {
+			k := node.key
+			v := node.value
 			ki, err := valueToInterface(k.Value, resolver, opt)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			var str string
 			var ok bool
 			if str, ok = ki.(string); !ok {
-				var buf bytes.Buffer
-				if err := json.NewEncoder(&buf).Encode(ki); err != nil {
-					return err
+				keyBuf.Reset()
+				if err := json.NewEncoder(&keyBuf).Encode(ki); err != nil {
+					return nil, err
 				}
-				str = strings.TrimSpace(buf.String())
+				str = strings.TrimSpace(keyBuf.String())
 			}
 			vi, err := valueToInterface(v.Value, resolver, opt)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			buf[str] = vi
-			return nil
-		})
-		if err != nil {
-			return nil, err
 		}
 		return buf, nil
 	case *lazyObj:
@@ -229,7 +231,7 @@ func valueToInterface(v Value, resolver Resolver, opt JSONOpt) (interface{}, err
 		}
 		return v.native, nil
 	case Set:
-		buf := []interface{}{}
+		buf := make([]interface{}, 0, v.Len())
 		iter := func(x *Term) error {
 			x1, err := valueToInterface(x.Value, resolver, opt)
 			if err != nil {
@@ -239,6 +241,7 @@ func valueToInterface(v Value, resolver Resolver, opt JSONOpt) (interface{}, err
 			return nil
 		}
 		var err error
+		// Note(philip): Sets are always sorted nowadays, because Iter forces it.
 		if opt.SortSets {
 			err = v.Sorted().Iter(iter)
 		} else {
@@ -406,9 +409,7 @@ func (term *Term) Get(name *Term) *Term {
 		return v.Get(name)
 	case *Array:
 		return v.Get(name)
-	case interface {
-		Get(*Term) *Term
-	}:
+	case interface{ Get(*Term) *Term }:
 		return v.Get(name)
 	case Set:
 		if v.Contains(name) {
@@ -1236,7 +1237,8 @@ func (arr *Array) Copy() *Array {
 		elems:  termSliceCopy(arr.elems),
 		hashs:  cpy,
 		hash:   arr.hash,
-		ground: arr.IsGround()}
+		ground: arr.IsGround(),
+	}
 }
 
 // Equal returns true if arr is equal to other.
@@ -1905,7 +1907,6 @@ func (s *set) get(x *Term) *Term {
 				return a.Cmp(b) == 0
 			}
 			return false
-
 		}
 
 	default:
