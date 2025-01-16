@@ -160,8 +160,14 @@ func (p *Plugin) Reconfigure(ctx context.Context, config interface{}) {
 	newConfig := config.(*Config)
 	newBundles, updatedBundles, deletedBundles := p.configDelta(newConfig)
 	p.config = *newConfig
+	isMultiBundle := p.config.IsMultiBundle()
 
 	p.cfgMtx.Unlock()
+
+	// Note(philipc): We can remove this warning once the legacy bundle configuration style is removed.
+	if !isMultiBundle {
+		p.logger.Warn("The 'bundle' configuration field is deprecated. Please switch to the multi-bundle configuration style, using the 'bundles' field.")
+	}
 
 	if len(updatedBundles) == 0 && len(newBundles) == 0 && len(deletedBundles) == 0 {
 		// no relevant config changes
@@ -380,6 +386,11 @@ func (p *Plugin) loadAndActivateBundlesFromDisk(ctx context.Context) {
 	p.cfgMtx.RLock()
 	isMultiBundle := p.config.IsMultiBundle()
 	p.cfgMtx.RUnlock()
+
+	// Note(philipc): We can remove this warning once the legacy bundle configuration style is removed.
+	if !isMultiBundle {
+		p.logger.Warn("The 'bundle' configuration field is deprecated. Please switch to the multi-bundle configuration style, using the 'bundles' field.")
+	}
 
 	for name, src := range bundles {
 		if p.persistBundle(name, bundles) {
